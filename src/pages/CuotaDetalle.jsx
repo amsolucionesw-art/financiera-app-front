@@ -1,8 +1,11 @@
 // src/pages/CuotaDetalle.jsx
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { obtenerCuotaPorId, obtenerPagosPorCuota } from '../services/cuotaService';
 import { ArrowLeft, FileText } from 'lucide-react';
+import { parseISO, isValid, format as dfFormat } from 'date-fns';
+
+const VTO_FICTICIO_LIBRE = '2099-12-31';
 
 const fmtARS = (n) =>
     Number(n || 0).toLocaleString('es-AR', {
@@ -11,6 +14,27 @@ const fmtARS = (n) =>
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     });
+
+const safeFmtDate = (s, fallback = '—') => {
+    if (!s) return fallback;
+    try {
+        const d = typeof s === 'string' ? parseISO(s) : new Date(s);
+        if (!isValid(d)) return fallback;
+        return dfFormat(d, 'dd/MM/yyyy');
+    } catch {
+        return fallback;
+    }
+};
+
+// colores simples locales para estado (sin depender de utils)
+const estadoBadge = (estadoRaw = '') => {
+    const e = String(estadoRaw).toLowerCase();
+    if (e === 'pagada') return 'bg-green-100 text-green-700 ring-green-200';
+    if (e === 'vencida') return 'bg-red-100 text-red-700 ring-red-200';
+    if (e === 'pendiente') return 'bg-yellow-100 text-yellow-700 ring-yellow-200';
+    if (e === 'parcial') return 'bg-blue-100 text-blue-700 ring-blue-200';
+    return 'bg-gray-100 text-gray-700 ring-gray-200';
+};
 
 const CuotaDetalle = () => {
     const { id } = useParams();
@@ -31,7 +55,8 @@ const CuotaDetalle = () => {
                 // Historial de pagos (si existe endpoint)
                 try {
                     const p = await obtenerPagosPorCuota(id);
-                    if (alive) setPagos(Array.isArray(p) ? p : p?.data ?? []);
+                    const arr = Array.isArray(p) ? p : (p?.data ?? []);
+                    if (alive) setPagos(Array.isArray(arr) ? arr : []);
                 } catch {
                     /* opcional, si no existe o falla */
                 }
@@ -79,13 +104,25 @@ const CuotaDetalle = () => {
     const mora = Number(cuota?.intereses_vencidos_acumulados ?? 0);
     const pendiente = Math.max(importe - descuento - pagado, 0);
 
+    // LIBRE si el vencimiento es el ficticio
+    const esLibre = String(cuota?.fecha_vencimiento) === VTO_FICTICIO_LIBRE;
+
     return (
         <section className="p-6 space-y-4">
-            <header className="flex items-center justify-between">
+            <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h1 className="text-xl font-semibold text-slate-800">
-                    Detalle de Cuota #{cuota?.numero_cuota} (ID {cuota?.id})
+                    Detalle de Cuota #{cuota?.numero_cuota} <span className="text-slate-400">(ID {cuota?.id})</span>
                 </h1>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                    {cuota?.estado && (
+                        <span
+                            className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${estadoBadge(
+                                cuota.estado
+                            )}`}
+                        >
+                            Estado: {cuota.estado}
+                        </span>
+                    )}
                     {cuota?.credito_id && (
                         <Link
                             to={`/creditos/${cuota.credito_id}`}
@@ -122,7 +159,9 @@ const CuotaDetalle = () => {
                     </div>
                     <div>
                         <dt className="text-xs uppercase text-slate-500">Vencimiento</dt>
-                        <dd className="font-medium">{cuota?.fecha_vencimiento ?? '—'}</dd>
+                        <dd className="font-medium">
+                            {esLibre ? 'Sin vencimiento (LIBRE)' : safeFmtDate(cuota?.fecha_vencimiento)}
+                        </dd>
                     </div>
                     <div>
                         <dt className="text-xs uppercase text-slate-500">Estado</dt>
@@ -153,15 +192,39 @@ const CuotaDetalle = () => {
                                 <tr>
                                     <th className="px-3 py-2 text-left font-medium">Fecha</th>
                                     <th className="px-3 py-2 text-left font-medium">Monto</th>
+                                    <th className="px-3 py-2 text-left font-medium">Medio</th>
+                                    <th className="px-3 py-2 text-left font-medium">Recibo</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-200">
-                                {pagos.map((p) => (
-                                    <tr key={p.id}>
-                                        <td className="px-3 py-2">{p?.fecha_pago ?? '—'}</td>
-                                        <td className="px-3 py-2">{fmtARS(p?.monto_pagado ?? 0)}</td>
-                                    </tr>
-                                ))}
+                                {pagos.map((p) => {
+                                    const fecha = safeFmtDate(p?.fecha_pago, p?.fecha || '—');
+                                    const monto = fmtARS(p?.monto_pagado ?? p?.monto ?? 0);
+                                    const medio = p?.medio_pago ?? p?.forma_pago ?? '—';
+                                    const numeroRecibo = p?.numero_recibo ?? p?.recibo_id ?? null;
+
+                                    return (
+                                        <tr key={p.id ?? `${fecha}-${monto}`}>
+                                            <td className="px-3 py-2">{fecha}</td>
+                                            <td className="px-3 py-2">{monto}</td>
+                                            <td className="px-3 py-2">{medio}</td>
+                                            <td className="px-3 py-2">
+                                                {numeroRecibo ? (
+                                                    <Link
+                                                        to={`/recibo/${numeroRecibo}`}
+                                                        className="text-blue-600 hover:underline"
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                    >
+                                                        #{numeroRecibo}
+                                                    </Link>
+                                                ) : (
+                                                    '—'
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

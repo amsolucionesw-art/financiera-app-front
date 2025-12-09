@@ -182,12 +182,19 @@ const Mensual = () => {
     const [movs, setMovs] = useState([]);
     const [loading, setLoading] = useState(false);
 
+    // Mostrar por defecto últimos 3 días en la tabla; el resumen sigue siendo mensual
+    const [mostrarMesCompleto, setMostrarMesCompleto] = useState(false);
+
     // filtros opcionales para la tabla del mes
     const [filtroTipos, setFiltroTipos] = useState([]);
     const [formaPagoId, setFormaPagoId] = useState('');
     const [categorias, setCategorias] = useState([]);
     const [refId, setRefId] = useState('');
     const [q, setQ] = useState('');
+
+    // Paginación tabla movimientos
+    const [currentPage, setCurrentPage] = useState(1);
+    const rowsPerPage = 10;
 
     // Modal de detalle
     const [modalOpen, setModalOpen] = useState(false);
@@ -221,11 +228,19 @@ const Mensual = () => {
     const cargarMovimientos = useCallback(async () => {
         setLoading(true);
         try {
-            const params = {
-                desde: firstDay(anio, mes),
-                hasta: lastDay(anio, mes),
-                limit: 1000,
-            };
+            // ⚠️ Comportamiento:
+            // - Si mostrarMesCompleto = true → se consulta el mes completo (desde/hasta).
+            // - Si mostrarMesCompleto = false → NO enviamos fechas → backend devuelve últimos 3 días.
+            const params = {};
+            if (mostrarMesCompleto) {
+                params.desde = firstDay(anio, mes);
+                params.hasta = lastDay(anio, mes);
+                params.limit = 1000;
+            } else {
+                // sin fechas; opcionalmente limit “defensivo”
+                params.limit = 200;
+            }
+
             if (filtroTipos && filtroTipos.length) params.tipo = filtroTipos;
             if (formaPagoId !== '') params.forma_pago_id = formaPagoId;
             if (categorias && categorias.length) params.referencia_tipo = categorias;
@@ -234,13 +249,14 @@ const Mensual = () => {
 
             const data = await obtenerMovimientos(params);
             setMovs(Array.isArray(data) ? data : []);
+            setCurrentPage(1); // reset paginación al recargar
         } catch (err) {
             console.error('Error movimientos mes', err);
             Swal.fire('Error', err.message || 'No se pudieron cargar movimientos', 'error');
         } finally {
             setLoading(false);
         }
-    }, [anio, mes, filtroTipos, formaPagoId, categorias, refId, q]);
+    }, [anio, mes, mostrarMesCompleto, filtroTipos, formaPagoId, categorias, refId, q]);
 
     useEffect(() => {
         fetchFormas();
@@ -253,7 +269,7 @@ const Mensual = () => {
 
     const totales = useMemo(() => resumen?.totales || null, [resumen]);
 
-    // 🔧 FIX: calcular siempre el saldo del mes en el front
+    // Saldo del mes (apertura + ingreso - egreso + ajuste - cierre)
     const saldoMes = useMemo(() => {
         const t = totales || {};
         const apertura = Number(t.apertura || 0);
@@ -279,7 +295,7 @@ const Mensual = () => {
         return out;
     }, [resumen]);
 
-    // Saldo del mes por forma de pago (coincide con la fórmula general)
+    // Saldo del mes por forma de pago
     const detalleSaldoPorForma = useMemo(() => {
         const pf = resumen?.porFormaPago || {};
         const build = [];
@@ -325,6 +341,18 @@ const Mensual = () => {
         }));
     }, [resumen]);
 
+    // Paginación
+    const totalPages = useMemo(() => {
+        if (!movs || movs.length === 0) return 1;
+        return Math.ceil(movs.length / rowsPerPage);
+    }, [movs]);
+
+    const paginatedMovs = useMemo(() => {
+        if (!movs || movs.length === 0) return [];
+        const start = (currentPage - 1) * rowsPerPage;
+        return movs.slice(start, start + rowsPerPage);
+    }, [movs, currentPage]);
+
     const exportarCSV = () => {
         const rows = (movs || []).map((m) => ({
             fecha: m.fecha,
@@ -333,6 +361,10 @@ const Mensual = () => {
             concepto: m.concepto,
             forma_pago:
                 m.formaPago?.nombre || (m.forma_pago_id == null ? 'Sin especificar' : `#${m.forma_pago_id}`),
+            usuario:
+                m.usuario?.nombre_completo ||
+                m.usuario?.nombre_usuario ||
+                (m.usuario_id ? `#${m.usuario_id}` : ''),
             categoria: referenciaTipoLabel(m.referencia_tipo),
             referencia_id: m.referencia_tipo ? (m.referencia_id ?? '') : '',
             monto: Number(m.monto || 0).toFixed(2).replace('.', ','),
@@ -344,6 +376,7 @@ const Mensual = () => {
             'tipo',
             'concepto',
             'forma_pago',
+            'usuario',
             'categoria',
             'referencia_id',
             'monto',
@@ -371,7 +404,7 @@ const Mensual = () => {
     };
 
     const abrirModalSaldo = () => {
-        const totalGeneral = Number(saldoMes); // 🔧 usar el calculado
+        const totalGeneral = Number(saldoMes);
         const rows = detalleSaldoPorForma.map((d) => ({
             nombre: d?.nombre ?? 'Sin especificar',
             total: Number(d?.total || 0),
@@ -388,7 +421,6 @@ const Mensual = () => {
 
     /* ------- UI ------- */
 
-    // Card “clickable” (abre modal)
     const CardTotal = ({ tipo, total, onClick }) => (
         <button
             type="button"
@@ -422,6 +454,10 @@ const Mensual = () => {
             </div>
         </button>
     );
+
+    const startIndex = movs && movs.length > 0 ? (currentPage - 1) * rowsPerPage + 1 : 0;
+    const endIndex =
+        movs && movs.length > 0 ? Math.min(currentPage * rowsPerPage, movs.length) : 0;
 
     return (
         <div className="p-4 sm:p-6">
@@ -466,7 +502,7 @@ const Mensual = () => {
                 </div>
             </div>
 
-            {/* Totales del mes (ahora abren modal) */}
+            {/* Totales del mes */}
             <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-6">
                 {['ingreso', 'egreso', 'ajuste', 'apertura', 'cierre'].map((t) => (
                     <CardTotal key={t} tipo={t} total={totales?.[t] ?? 0} onClick={() => abrirModalTipo(t)} />
@@ -625,19 +661,33 @@ const Mensual = () => {
                 </div>
             </div>
 
-            <div className="mb-3 flex items-center gap-2">
-                <button
-                    onClick={cargarMovimientos}
-                    className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
-                >
-                    Refrescar tabla
-                </button>
-                <button
-                    onClick={exportarCSV}
-                    className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                    Exportar CSV (mes)
-                </button>
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-slate-300"
+                        checked={mostrarMesCompleto}
+                        onChange={(e) => setMostrarMesCompleto(e.target.checked)}
+                    />
+                    <span>
+                        {mostrarMesCompleto ? 'Mostrando el mes completo' : 'Mostrar solo últimos 3 días (por defecto)'}
+                    </span>
+                </label>
+
+                <div className="ml-auto flex items-center gap-2">
+                    <button
+                        onClick={cargarMovimientos}
+                        className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
+                    >
+                        Refrescar tabla
+                    </button>
+                    <button
+                        onClick={exportarCSV}
+                        className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                        Exportar CSV ({mostrarMesCompleto ? 'mes' : 'últimos 3 días'})
+                    </button>
+                </div>
             </div>
 
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -650,6 +700,7 @@ const Mensual = () => {
                                 <th className="px-4 py-2">Tipo</th>
                                 <th className="px-4 py-2">Concepto</th>
                                 <th className="px-4 py-2">Forma de pago</th>
+                                <th className="px-4 py-2">Usuario</th>
                                 <th className="px-4 py-2">Categoría</th>
                                 <th className="px-4 py-2">Referencia</th>
                                 <th className="px-4 py-2 text-right">Monto</th>
@@ -658,18 +709,18 @@ const Mensual = () => {
                         <tbody>
                             {loading ? (
                                 <tr>
-                                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
                                         Cargando movimientos...
                                     </td>
                                 </tr>
                             ) : (movs || []).length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
-                                        No hay movimientos para el mes seleccionado con los filtros aplicados.
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
+                                        No hay movimientos {mostrarMesCompleto ? 'del mes' : 'recientes'} con los filtros aplicados.
                                     </td>
                                 </tr>
                             ) : (
-                                movs.map((m) => (
+                                paginatedMovs.map((m) => (
                                     <tr key={m.id} className="border-t border-slate-100">
                                         <td className="px-4 py-2">{m.fecha}</td>
                                         <td className="px-4 py-2">{m.hora}</td>
@@ -683,8 +734,15 @@ const Mensual = () => {
                                             {m.formaPago?.nombre ||
                                                 (m.forma_pago_id == null ? 'Sin especificar' : `#${m.forma_pago_id}`)}
                                         </td>
+                                        <td className="px-4 py-2">
+                                            {m.usuario?.nombre_completo ||
+                                                m.usuario?.nombre_usuario ||
+                                                (m.usuario_id ? `#${m.usuario_id}` : '—')}
+                                        </td>
                                         <td className="px-4 py-2">{referenciaTipoLabel(m.referencia_tipo)}</td>
-                                        <td className="px-4 py-2">{m.referencia_tipo ? `${m.referencia_id ?? ''}` : '—'}</td>
+                                        <td className="px-4 py-2">
+                                            {m.referencia_tipo ? `${m.referencia_id ?? ''}` : '—'}
+                                        </td>
                                         <td className="px-4 py-2 text-right font-medium">{fmtARS(Number(m.monto))}</td>
                                     </tr>
                                 ))
@@ -692,6 +750,36 @@ const Mensual = () => {
                         </tbody>
                     </table>
                 </div>
+
+                {/* Controles de paginación */}
+                {!loading && movs && movs.length > 0 && (
+                    <div className="flex flex-col gap-2 border-t border-slate-100 bg-slate-50 px-4 py-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="text-xs">
+                            Mostrando {startIndex}–{endIndex} de {movs.length} movimientos
+                        </div>
+                        <div className="flex items-center gap-2 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                disabled={currentPage === 1}
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                            >
+                                Anterior
+                            </button>
+                            <span className="text-xs">
+                                Página {currentPage} de {totalPages}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={currentPage === totalPages || movs.length === 0}
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                            >
+                                Siguiente
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Modal de detalle */}

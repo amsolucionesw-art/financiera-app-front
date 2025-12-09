@@ -195,7 +195,7 @@ export default function CompraForm() {
         return () => provDebounceId.current && clearTimeout(provDebounceId.current);
     }, [provSearch, fetchProveedores]);
 
-    // Filtro cliente adicional (garantiza que siempre veas algo)
+    // Filtro cliente adicional
     const proveedoresFiltrados = useMemo(() => {
         const q = (provSearch || '').toLowerCase().trim();
         if (!q) return proveedores;
@@ -268,15 +268,18 @@ export default function CompraForm() {
 
     const totalSugerido = useMemo(() => {
         const sum =
-            toNumber(form.neto) + toNumber(form.iva) + toNumber(form.per_iva) + toNumber(form.per_iibb_tuc) + toNumber(form.per_tem);
+            toNumber(form.neto) +
+            toNumber(form.iva) +
+            toNumber(form.per_iva) +
+            toNumber(form.per_iibb_tuc) +
+            toNumber(form.per_tem);
         return Number.isFinite(sum) ? sum : 0;
     }, [form.neto, form.iva, form.per_iva, form.per_iibb_tuc, form.per_tem]);
 
-    const diffTotal = useMemo(() => toNumber(form.total) - totalSugerido, [form.total, totalSugerido]);
-
-    const usarSugerido = () => {
-        setForm((s) => ({ ...s, total: toCommaFixed(totalSugerido) }));
-    };
+    const diffTotal = useMemo(
+        () => toNumber(form.total) - totalSugerido,
+        [form.total, totalSugerido]
+    );
 
     const proveedorSeleccionado = useMemo(() => {
         if (!form.proveedor_id) return null;
@@ -294,28 +297,32 @@ export default function CompraForm() {
 
     const onSubmit = async (e) => {
         e.preventDefault();
-        setLoading(true);
         setErr('');
+
+        // Validación: el total tiene que coincidir con el sugerido
+        const totalIngresado = toNumber(form.total);
+        const diferencia = totalIngresado - totalSugerido;
+
+        if (totalSugerido > 0 && Math.abs(diferencia) >= 0.01) {
+            await Swal.fire({
+                title: 'El total no coincide',
+                text: `La suma sugerida de los importes es ${fmtARS(
+                    totalSugerido
+                )} y el total ingresado es ${fmtARS(totalIngresado)}. Ajustá los importes o el total para que no haya diferencia.`,
+                icon: 'warning',
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#2563eb'
+            });
+            return;
+        }
+
+        setLoading(true);
         try {
             let payload = { ...form };
+
+            // Si por algún motivo quedó el total vacío pero hay sugerido, lo completamos
             if (!String(payload.total).trim() && totalSugerido > 0) {
                 payload.total = toCommaFixed(totalSugerido);
-            } else if (Math.abs(diffTotal) >= 0.01) {
-                const res = await Swal.fire({
-                    title: 'El total no coincide',
-                    text: `La suma sugerida de los importes es ${fmtARS(totalSugerido)} y el total ingresado es ${fmtARS(
-                        toNumber(form.total)
-                    )}. ¿Deseás guardar de todos modos?`,
-                    icon: 'warning',
-                    showCancelButton: true,
-                    confirmButtonText: 'Sí, guardar',
-                    cancelButtonText: 'Revisar',
-                    confirmButtonColor: '#2563eb'
-                });
-                if (!res.isConfirmed) {
-                    setLoading(false);
-                    return;
-                }
             }
 
             if (payload.proveedor_id === '') delete payload.proveedor_id;
@@ -615,14 +622,10 @@ export default function CompraForm() {
                                     className="text-right"
                                 />
                                 <div className="mt-1 text-[12px] text-gray-600">
-                                    Sugerido: <span className="font-medium">{fmtARS(totalSugerido)}</span>{' '}
+                                    Sugerido: <span className="font-medium">{fmtARS(totalSugerido)}</span>
                                     {Math.abs(diffTotal) >= 0.01 && (
-                                        <span className="ml-2">
-                                            (dif: {fmtARS(diffTotal)}{' '}
-                                            <button type="button" onClick={usarSugerido} className="ml-2 underline hover:no-underline">
-                                                usar sugerido
-                                            </button>
-                                            )
+                                        <span className="ml-2 text-rose-600">
+                                            (dif: {fmtARS(diffTotal)} — ajustá los importes o el total para que la diferencia sea $0,00)
                                         </span>
                                     )}
                                 </div>
@@ -654,11 +657,21 @@ export default function CompraForm() {
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                             <div>
                                 <Label>Depósito destino</Label>
-                                <Input name="deposito_destino" value={form.deposito_destino} onChange={onChange} placeholder="Depósito / Sucursal" />
+                                <Input
+                                    name="deposito_destino"
+                                    value={form.deposito_destino}
+                                    onChange={onChange}
+                                    placeholder="Depósito / Sucursal"
+                                />
                             </div>
                             <div className="md:col-span-2">
                                 <Label>Referencia de compra</Label>
-                                <Input name="referencia_compra" value={form.referencia_compra} onChange={onChange} placeholder="Ej: OC-2025-0001" />
+                                <Input
+                                    name="referencia_compra"
+                                    value={form.referencia_compra}
+                                    onChange={onChange}
+                                    placeholder="Ej: OC-2025-0001"
+                                />
                             </div>
 
                             <div>
@@ -674,16 +687,32 @@ export default function CompraForm() {
                             </div>
                             <div>
                                 <Label>Facturado a</Label>
-                                <Input name="facturado_a" value={form.facturado_a} onChange={onChange} placeholder="Razón social / Persona" />
+                                <Input
+                                    name="facturado_a"
+                                    value={form.facturado_a}
+                                    onChange={onChange}
+                                    placeholder="Razón social / Persona"
+                                />
                             </div>
                             <div>
                                 <Label>Gasto realizado por</Label>
-                                <Input name="gasto_realizado_por" value={form.gasto_realizado_por} onChange={onChange} placeholder="Usuario / Sector" />
+                                <Input
+                                    name="gasto_realizado_por"
+                                    value={form.gasto_realizado_por}
+                                    onChange={onChange}
+                                    placeholder="Usuario / Sector"
+                                />
                             </div>
 
                             <div className="md:col-span-3">
                                 <Label>Observación</Label>
-                                <TextArea name="observacion" value={form.observacion} onChange={onChange} rows={2} placeholder="Notas internas…" />
+                                <TextArea
+                                    name="observacion"
+                                    value={form.observacion}
+                                    onChange={onChange}
+                                    rows={2}
+                                    placeholder="Notas internas…"
+                                />
                             </div>
                         </div>
                     </div>
@@ -722,4 +751,3 @@ export default function CompraForm() {
         </div>
     );
 }
-

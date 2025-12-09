@@ -2,30 +2,58 @@
 import { apiFetch } from './apiClient';
 
 const API_PREFIX = import.meta.env.VITE_API_PREFIX || ''; // p.ej. "/api"
-const BASE = `${API_PREFIX}/tareas`;
+
+// Une segmentos asegurando que no queden dobles slashes internos
+const joinPath = (...parts) =>
+    '/' +
+    parts
+        .filter(Boolean)
+        .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
+        .join('/');
+
+const BASE = joinPath(API_PREFIX, 'tareas');
 
 /** Lista solo las tareas en estado "pendiente" */
 export const obtenerTareasPendientes = () =>
-    apiFetch(`${BASE}`, { params: { estado: 'pendiente' } });
+    apiFetch(BASE, { params: { estado: 'pendiente' } });
 
-/** Aprueba una tarea pendiente */
+/** (Opcional) Lista tareas por estado: 'pendiente' | 'aprobada' | 'rechazada' */
+export const obtenerTareas = (estado) =>
+    apiFetch(BASE, { params: estado ? { estado } : undefined });
+
+/** Aprueba una tarea pendiente (solo superadmin) */
 export const aprobarTarea = (id) =>
-    apiFetch(`${BASE}/${id}/aprobar`, { method: 'PATCH' });
+    apiFetch(joinPath(BASE, id, 'aprobar'), { method: 'PATCH' });
 
-/** Rechaza una tarea pendiente */
+/** Rechaza una tarea pendiente (solo superadmin) */
 export const rechazarTarea = (id) =>
-    apiFetch(`${BASE}/${id}/rechazar`, { method: 'PATCH' });
+    apiFetch(joinPath(BASE, id, 'rechazar'), { method: 'PATCH' });
 
 /**
- * Crea una tarea de "anular_credito".
- * Nota: el backend expone POST /tareas/pendientes para altas.
+ * Crea una tarea de "anular_credito" (admin).
+ * Intento 1: POST /tareas/pendientes (alias)
+ * Si el backend responde 404 → Intento 2: POST /tareas (canónica)
+ *
+ * El backend toma el userId desde req.user.id (token), por eso
+ * no enviamos userId en el body.
  */
-export const solicitarAnulacionCredito = ({ creditoId, motivo, userId }) =>
-    apiFetch(`${BASE}/pendientes`, {
-        method: 'POST',
-        body: {
-            tipo: 'anular_credito',
-            datos: { creditoId, motivo },
-            creadoPor: userId
+export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
+    const body = {
+        tipo: 'anular_credito',
+        datos: { creditoId, motivo }
+    };
+
+    const pathPendientes = joinPath(BASE, 'pendientes'); // /tareas/pendientes
+    const pathCanonico = BASE;                            // /tareas
+
+    try {
+        return await apiFetch(pathPendientes, { method: 'POST', body });
+    } catch (err) {
+        const status = err?.status ?? err?.response?.status;
+        const msg = (err?.message || '').toLowerCase();
+        if (status === 404 || msg.includes('404')) {
+            return apiFetch(pathCanonico, { method: 'POST', body });
         }
-    });
+        throw err;
+    }
+};

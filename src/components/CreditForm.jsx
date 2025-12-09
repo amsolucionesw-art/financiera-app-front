@@ -15,6 +15,7 @@ const periodLen = (tipo) => {
 };
 
 /** Interés proporcional con mínimo 60%
+ * Plan de Cuotas Fijas (antes "común") / progresivo:
  * semanal:   60% * (semanas / 4)
  * quincenal: 60% * (quincenas / 2)
  * mensual:   60% * (meses / 1)
@@ -50,7 +51,7 @@ const CreditForm = ({
     onCancel,
     onSubmit,
     submitting,
-    mostrarCobrador = true // ⟵ NUEVO: permite ocultar el campo de cobrador si ya se eligió afuera
+    mostrarCobrador = true // ⟵ permite ocultar el campo de cobrador si ya se eligió afuera
 }) => {
     const token = localStorage.getItem('token');
     const decoded = token ? jwtDecode(token) : {};
@@ -70,7 +71,7 @@ const CreditForm = ({
             cobrador_id: '',
             monto_acreditar: '',
             tipo_credito: '',
-            modalidad_credito: defaultValues.modalidad_credito || 'comun',
+            modalidad_credito: defaultValues.modalidad_credito || 'comun', // value 'comun' se mantiene para el backend
             cantidad_cuotas: defaultValues.cantidad_cuotas || '',
             interes: defaultValues.interes || 0, // SIEMPRE solo lectura
             fecha_acreditacion: '',
@@ -100,7 +101,7 @@ const CreditForm = ({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isLibre]);
 
-    // En común/progresivo recalcular interés automáticamente (proporcional min 60)
+    // En Plan de Cuotas Fijas / Progresivo recalcular interés automáticamente (proporcional min 60)
     useEffect(() => {
         if (isLibre) return;
         const pct = interesProporcionalMin60(tipo_credito, cantidad_cuotas);
@@ -131,7 +132,7 @@ const CreditForm = ({
             };
         }
 
-        // comun / progresivo
+        // Plan de Cuotas Fijas / Progresivo
         const interesPct = interesProporcionalMin60(tipo_credito, cantidad_cuotas);
         const totalSinDesc = capital * (1 + interesPct / 100);
         const descPct = esSuperAdmin ? clamp(descuento, 0, 100) : 0;
@@ -238,7 +239,7 @@ const CreditForm = ({
                     className={inputClass}
                     disabled={isLibre}
                 >
-                    <option value="">{isLibre ? 'Mensual (forzado en LIBRE)' : 'Seleccione tipo'}</option>
+                    <option value="">{isLibre ? 'Mensual (forzado en Libre)' : 'Seleccione tipo'}</option>
                     <option value="semanal">Semanal</option>
                     <option value="quincenal">Quincenal</option>
                     <option value="mensual">Mensual</option>
@@ -248,14 +249,15 @@ const CreditForm = ({
                 )}
             </div>
 
-            {/* Modalidad de crédito */}
+            {/* Modalidad de crédito (label actualizado) */}
             <div>
                 <label className="mb-1 block text-sm">Modalidad de crédito</label>
                 <select
                     {...register('modalidad_credito', { required: 'Requerido' })}
                     className={inputClass}
                 >
-                    <option value="comun">Común</option>
+                    {/* value 'comun' se mantiene; el texto visible cambia a Plan de Cuotas Fijas */}
+                    <option value="comun">Plan de Cuotas Fijas</option>
                     <option value="progresivo">Progresivo</option>
                     <option value="libre">Libre</option>
                 </select>
@@ -385,7 +387,7 @@ const CreditForm = ({
                     <div>
                         <span className="text-gray-500">
                             {isLibre
-                                ? 'Total inicial del crédito (libre):'
+                                ? 'Total inicial del crédito (Libre):'
                                 : derived.descPct
                                     ? `Total a devolver (con desc. ${derived.descPct}%):`
                                     : 'Total a devolver (final):'}
@@ -403,7 +405,7 @@ const CreditForm = ({
                 </div>
                 {isLibre && (
                     <p className="mt-2 text-xs text-gray-500">
-                        En modalidad <strong>libre</strong>, se crea una (1) cuota abierta y el interés se evalúa
+                        En modalidad <strong>Libre</strong>, se crea una (1) cuota abierta y el interés se evalúa
                         por ciclo sobre el capital pendiente. El descuento al crear <strong>no aplica</strong>;
                         se puede usar al cancelar/pagar si corresponde.
                     </p>
@@ -432,3 +434,4 @@ const CreditForm = ({
 };
 
 export default CreditForm;
+

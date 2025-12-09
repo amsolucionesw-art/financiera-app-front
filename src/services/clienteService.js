@@ -1,9 +1,22 @@
 // src/services/clienteService.js
 
-import apiFetch, { getAuthHeaders } from './apiClient';
+import apiFetch from './apiClient';
 
-/* Base para absolutizar URLs de imágenes (DNI) */
+/* Base de API */
 const BASE_URL = (import.meta?.env?.VITE_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
+const API_PREFIX = (import.meta?.env?.VITE_API_PREFIX || '/api').replace(/\/+$/, '');
+const API_BASE = `${BASE_URL}${API_PREFIX}`;
+
+/* Header SOLO con Authorization (sin Content-Type) */
+const getAuthHeaderOnly = () => {
+    try {
+        const raw = localStorage.getItem('token') || localStorage.getItem('authToken') || '';
+        const token = raw?.replace(/^Bearer\s+/i, '') || raw;
+        return token ? { Authorization: `Bearer ${token}` } : {};
+    } catch {
+        return {};
+    }
+};
 
 /* Si viene una ruta relativa (p. ej. "/uploads/dni/123.jpg"), la paso a absoluta */
 const toAbsoluteUrl = (maybePath) => {
@@ -30,7 +43,6 @@ const toQueryString = (params = {}) => {
 /** Obtener todos los clientes (listado completo) */
 export const obtenerClientes = async () => {
     const resp = await apiFetch('/clientes'); // apiFetch ya tira si hay error
-    // Normalizo imágenes, si hay
     return Array.isArray(resp)
         ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
         : resp;
@@ -40,7 +52,6 @@ export const obtenerClientes = async () => {
 export const obtenerClientesBasico = async (filtros = {}) => {
     const qs = toQueryString(filtros);
     const resp = await apiFetch(`/clientes/basico${qs}`);
-    // (En este endpoint no suelen venir imágenes, pero dejamos el normalizador por consistencia)
     return Array.isArray(resp)
         ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
         : resp;
@@ -65,7 +76,6 @@ export const crearCliente = async (cliente) => {
 
 /** Actualizar cliente */
 export const actualizarCliente = async (id, cliente) => {
-    // Devuelvo el recurso actualizado (si tu back lo retorna)
     const updated = await apiFetch(`/clientes/${id}`, {
         method: 'PUT',
         body: cliente,
@@ -80,7 +90,7 @@ export const eliminarCliente = (id) =>
 
 /**
  * Subir imagen del DNI (FormData).
- * Nota: evitamos apiFetch para no serializar el FormData y dejar que el navegador setee el boundary.
+ * IMPORTANTE: no mandar Content-Type manualmente.
  */
 export const subirDniFoto = async (clienteId, file) => {
     const formData = new FormData();
@@ -89,8 +99,7 @@ export const subirDniFoto = async (clienteId, file) => {
     const res = await fetch(`${BASE_URL}/clientes/${clienteId}/dni-foto`, {
         method: 'POST',
         headers: {
-            // Sólo auth; NO enviar Content-Type aquí
-            ...getAuthHeaders(false),
+            ...getAuthHeaderOnly(), // solo Authorization
         },
         body: formData,
     });
@@ -105,7 +114,6 @@ export const subirDniFoto = async (clienteId, file) => {
     }
 
     const payload = await res.json();
-    // Compat: si el backend devuelve { data }, tomo data; si devuelve el objeto directo, lo dejo igual
     const data = payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
     if (data && data.dni_foto) data.dni_foto = toAbsoluteUrl(data.dni_foto);
     return data;
@@ -117,4 +125,100 @@ export const obtenerClientesPorCobrador = async (cobradorId) => {
     return Array.isArray(resp)
         ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
         : resp;
+};
+
+/* ─────────── NUEVO: Importación por planilla (CSV/XLSX) ─────────── */
+
+/**
+ * Descarga la plantilla base de importación.
+ */
+export const descargarPlantillaImport = async ({ format = 'xlsx', filename, download = true } = {}) => {
+    const qs = toQueryString({ format });
+    const url = `${API_BASE}/clientes/import/template${qs}`;
+
+    const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+            ...getAuthHeaderOnly(), // solo Authorization
+        }
+    });
+
+    if (!res.ok) {
+        let msg = 'Error al descargar plantilla';
+        try {
+            const err = await res.json();
+            msg = err?.message || msg;
+        } catch { /* ignore */ }
+        throw new Error(msg);
+    }
+
+    const blob = await res.blob();
+    const mime = res.headers.get('Content-Type') || (format === 'csv'
+        ? 'text/csv'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+    const cd = res.headers.get('Content-Disposition') || '';
+    const match = /filename\*?=(?:UTF-8'')?["']?([^"';\n]+)["']?/i.exec(cd);
+    const suggestedNameFromHeader = match ? decodeURIComponent(match[1]) : null;
+
+    const suggestedName = suggestedNameFromHeader || `${filename || 'plantilla_import_clientes'}.${format}`;
+
+    if (!download) {
+        return { blob, mime, suggestedName };
+    }
+
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+};
+
+/**
+ * Obtiene la definición de columnas/alias/tipos para validar client-side.
+ */
+export const obtenerColumnasImport = async () => {
+    const data = await apiFetch('/clientes/import/columns');
+    return data;
+};
+
+/**
+ * Importa clientes desde un archivo CSV/XLSX.
+ * - Usa dryRun=true por defecto (previsualización). Para confirmar, dryRun=false.
+ * - Campo de archivo: "file"
+ */
+export const importarClientes = async (file, { dryRun = true } = {}) => {
+    if (!(file instanceof Blob)) {
+        throw new Error('Debes proporcionar un archivo CSV/XLSX válido');
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const url = `${API_BASE}/clientes/import${toQueryString({ dryRun })}`;
+
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            ...getAuthHeaderOnly(), // solo Authorization (SIN Content-Type)
+        },
+        body: formData
+    });
+
+    if (!res.ok) {
+        let msg = 'Error al importar clientes';
+        try {
+            const err = await res.json();
+            msg = err?.message || msg;
+        } catch { /* ignore */ }
+        throw new Error(msg);
+    }
+
+    const payload = await res.json();
+    return {
+        summary: payload.summary,
+        rows: payload.rows
+    };
 };

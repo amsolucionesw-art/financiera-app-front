@@ -11,7 +11,6 @@ import {
     obtenerCuotaPorId,
     registrarPagoParcial,
     pagarCuota,
-    // también expusimos este en creditoService; lo usamos desde acá para no agregar otro import
 } from '../services/cuotaService';
 import { obtenerResumenLibre as obtenerResumenLibreCredito } from '../services/creditoService';
 import { useNavigate } from 'react-router-dom';
@@ -30,7 +29,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
     const [formas, setFormas] = useState([]);
     const [pagos, setPagos] = useState([]);
     const [cuotaSrv, setCuotaSrv] = useState(cuota);
-    const [resumenLibre, setResumenLibre] = useState(null); // { saldo_capital, interes_pendiente_hoy, total_liquidacion_hoy, ciclo_actual, ... }
+    const [resumenLibre, setResumenLibre] = useState(null); // { saldo_capital, interes_pendiente_hoy, mora_pendiente_hoy, total_liquidacion_hoy, ciclo_actual, ... }
     const isMounted = useRef(true);
 
     /* RHF */
@@ -43,7 +42,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
     } = useForm({
         defaultValues: {
             tipoPago: 'total',     // 'total' | 'parcial'
-            descuento: 0,          // % en LIBRE total, MONTO en NO-LIBRE
+            descuento: 0,          // % en LIBRE total, MONTO en NO-LIBRE (sobre mora)
             montoAbono: '',
             formaId: '',
             observacion: '',
@@ -111,7 +110,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [cuota.id]);
 
-    /* Derivados memoizados (NO-LIBRE) */
+    /* Derivados memoizados (NO-LIBRE) — descuento SOLO sobre MORA */
     const derivedNoLibre = useMemo(() => {
         const importeCuota = round2(cuotaSrv?.importe_cuota);
         const descAcum = round2(cuotaSrv?.descuento_cuota);
@@ -119,8 +118,12 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
         const moraAcum = round2(cuotaSrv?.intereses_vencidos_acumulados);
 
         const principalPendiente = Math.max(importeCuota - descAcum - pagadoAcum, 0);
-        const descValido = clamp(descuentoWatch, 0, principalPendiente);
-        const netoTotalConDesc = round2(moraAcum + Math.max(principalPendiente - descValido, 0));
+
+        // ⬇️ Ahora el descuento válido se limita a la MORA (no al principal)
+        const descValido = clamp(descuentoWatch, 0, moraAcum);
+
+        // Neto total: (Mora - Descuento) + PrincipalPendiente
+        const netoTotalConDesc = round2(Math.max(moraAcum - descValido, 0) + principalPendiente);
 
         return {
             importeCuota,
@@ -133,20 +136,26 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
         };
     }, [cuotaSrv, descuentoWatch]);
 
-    /* Derivados memoizados (LIBRE) */
+    /* Derivados memoizados (LIBRE) — descuento % SOLO sobre mora del ciclo */
     const derivedLibre = useMemo(() => {
         const totalHoy = round2(resumenLibre?.total_liquidacion_hoy);
         const interesHoy = round2(resumenLibre?.interes_pendiente_hoy);
+        const moraHoy = round2(resumenLibre?.mora_pendiente_hoy);   // puede ser 0 si aún no venció compromiso
         const saldoCapital = round2(resumenLibre?.saldo_capital);
 
         const descPct = clamp(descuentoWatch, 0, 100);
-        const netoTotalConDesc = round2(totalHoy * (1 - (descPct / 100)));
+
+        // Neto = TotalHoy - (MoraHoy * %/100)
+        const descuentoEnPesos = round2(moraHoy * (descPct / 100));
+        const netoTotalConDesc = round2(Math.max(totalHoy - descuentoEnPesos, 0));
 
         return {
             totalHoy,
             interesHoy,
+            moraHoy,
             saldoCapital,
             descPct,
+            descuentoEnPesos,
             netoTotalConDesc
         };
     }, [resumenLibre, descuentoWatch]);
@@ -172,8 +181,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 
             // —— PAGO TOTAL —— //
             if (tipoPago === 'total') {
-                // LIBRE: descuento es %, NO-LIBRE: descuento es MONTO sobre principal
-                const descEnviar = isLibre ? clamp(Number(descuento || 0), 0, 100) : derivedNoLibre.descValido;
+                // LIBRE: descuento es % (aplica SOLO sobre mora del ciclo)
+                // NO-LIBRE: descuento es MONTO (aplica SOLO sobre mora)
+                const descEnviar = isLibre
+                    ? clamp(Number(descuento || 0), 0, 100)
+                    : derivedNoLibre.descValido;
 
                 const resp = await pagarCuota({
                     cuotaId: cuotaSrv.id,
@@ -236,7 +248,6 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                             cancelButtonText: 'Mantener monto'
                         });
                         if (confirmar.isConfirmed) {
-                            // Forzamos el monto al interés del ciclo
                             await registrarPagoParcial({
                                 cuota_id: cuotaSrv.id,
                                 monto_pagado: interes,
@@ -310,7 +321,9 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                         </div>
                         <div>
                             <dt className="font-medium text-gray-600">Total sin descuento:</dt>
-                            <dd className="mt-1">${fmtAR(derivedNoLibre.moraAcum + derivedNoLibre.principalPendiente)}</dd>
+                            <dd className="mt-1">
+                                ${fmtAR(derivedNoLibre.moraAcum + derivedNoLibre.principalPendiente)}
+                            </dd>
                         </div>
                         <div>
                             <dt className="font-medium text-gray-600">Vencimiento actual:</dt>
@@ -341,6 +354,12 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                 <div className="font-medium">${fmtAR(derivedLibre.interesHoy)}</div>
                             </div>
                             <div>
+                                <div className="text-gray-600">Mora del ciclo (hoy)</div>
+                                <div className="font-medium">
+                                    {derivedLibre?.moraHoy > 0 ? `$${fmtAR(derivedLibre.moraHoy)}` : 'No aplica'}
+                                </div>
+                            </div>
+                            <div className="col-span-2">
                                 <div className="text-gray-600">Total liquidación (hoy)</div>
                                 <div className="font-medium">${fmtAR(derivedLibre.totalHoy)}</div>
                             </div>
@@ -449,11 +468,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 
                     {/* Descuento */}
                     {!isLibre ? (
-                        // NO-LIBRE: descuento MONTO sobre principal
+                        // NO-LIBRE: descuento MONTO sobre MORA (no sobre principal)
                         <div>
                             <label className="block text-sm font-medium">
-                                Descuento (sobre principal)
-                                <span className="text-gray-500"> — máx: ${fmtAR(derivedNoLibre.principalPendiente)}</span>
+                                Descuento (sobre mora)
+                                <span className="text-gray-500"> — máx: ${fmtAR(derivedNoLibre.moraAcum)}</span>
                             </label>
                             <Controller
                                 name="descuento"
@@ -461,8 +480,8 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                 rules={{
                                     min: { value: 0, message: '>= 0' },
                                     validate: (v) =>
-                                        (Number(v || 0) <= derivedNoLibre.principalPendiente) ||
-                                        `No debe superar $${fmtAR(derivedNoLibre.principalPendiente)}`
+                                        (Number(v || 0) <= derivedNoLibre.moraAcum) ||
+                                        `No debe superar $${fmtAR(derivedNoLibre.moraAcum)}`
                                 }}
                                 render={({ field }) => (
                                     <input
@@ -478,11 +497,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                             {errors.descuento && <p className="text-red-600 text-sm">{errors.descuento.message}</p>}
                         </div>
                     ) : (
-                        // LIBRE: descuento % sobre (interés + capital) en PAGO TOTAL
+                        // LIBRE: descuento % sobre MORA del ciclo (solo en PAGO TOTAL)
                         tipoPago === 'total' && (
                             <div>
                                 <label className="block text-sm font-medium">
-                                    Descuento % sobre total (interés + capital)
+                                    Descuento % sobre mora del ciclo
                                     <span className="text-gray-500"> — 0 a 100%</span>
                                 </label>
                                 <Controller
@@ -504,6 +523,10 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                     )}
                                 />
                                 {errors.descuento && <p className="text-red-600 text-sm">{errors.descuento.message}</p>}
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Mora del ciclo (hoy): {derivedLibre.moraHoy > 0 ? `$${fmtAR(derivedLibre.moraHoy)}` : 'No aplica'}
+                                    {derivedLibre.moraHoy > 0 && ` — Bonificación estimada: $${fmtAR(derivedLibre.descuentoEnPesos)}`}
+                                </p>
                             </div>
                         )
                     )}
@@ -524,11 +547,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                             />
                             {!isLibre ? (
                                 <p className="text-xs text-gray-500 mt-1">
-                                    Neto = Mora (${fmtAR(derivedNoLibre.moraAcum)}) + Principal (${fmtAR(derivedNoLibre.principalPendiente)}) − Descuento (${fmtAR(derivedNoLibre.descValido)})
+                                    Neto = (Mora ${fmtAR(derivedNoLibre.moraAcum)} − Descuento ${fmtAR(derivedNoLibre.descValido)}) + Principal ${fmtAR(derivedNoLibre.principalPendiente)}
                                 </p>
                             ) : (
                                 <p className="text-xs text-gray-500 mt-1">
-                                    Neto = Total liquidación (${fmtAR(derivedLibre.totalHoy)}) − % Descuento ({fmtAR(derivedLibre.descPct)}%)
+                                    Neto = Total liquidación (${fmtAR(derivedLibre.totalHoy)}) − (Mora del ciclo × % Descuento) = −${fmtAR(derivedLibre.descuentoEnPesos)}
                                 </p>
                             )}
                         </div>
@@ -570,7 +593,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                 </p>
                             ) : (
                                 <p className="text-xs text-gray-500 mt-1">
-                                    En LIBRE no hay mora. Primero se cobra el interés del/los ciclo(s) y el excedente amortiza capital.
+                                    En LIBRE no hay mora “por cuota”. Primero se cobra el interés del ciclo y el excedente amortiza capital.
                                 </p>
                             )}
                         </div>
@@ -632,3 +655,4 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 };
 
 export default CuotaModal;
+

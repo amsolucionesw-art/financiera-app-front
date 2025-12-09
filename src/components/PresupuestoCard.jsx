@@ -1,51 +1,56 @@
 // src/components/PresupuestoCard.jsx
 
-import React from 'react';
+import React from "react";
 import {
     BadgeDollarSign,
     ListOrdered,
-    PercentCircle,
     CalendarClock,
     CalendarDays,
     X,
     Download
-} from 'lucide-react';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
+} from "lucide-react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const PresupuestoCard = ({ presupuesto, onClose }) => {
     const {
         numero,
         nombre_destinatario,
         fecha_creacion,
-        monto_financiado,
         cantidad_cuotas,
         valor_por_cuota,
         total_a_pagar,
-        tipo_credito
+        tipo_credito,        // periodicidad: mensual / quincenal / semanal
+        modalidad_credito,   // plan: comun / progresivo / libre
+        emitido_por          // quién emite el presupuesto
     } = presupuesto;
 
-    // Calcula el interés real a partir de los montos almacenados
-    const interestDecimal = total_a_pagar / monto_financiado - 1;
-    const percent = Math.round(interestDecimal * 100);
-
     const fmtMoneda = (v) =>
-        v.toLocaleString('es-AR', { minimumFractionDigits: 2 });
+        Number(v || 0).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     const fmtFecha = (str) =>
-        new Date(str).toLocaleDateString('es-AR', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric'
+        new Date(str).toLocaleDateString("es-AR", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric"
         });
+
+    const planLabel = (() => {
+        const raw = String(modalidad_credito || "").toLowerCase();
+        if (raw === "libre") return "LIBRE";
+        if (raw === "comun") return "PLAN DE CUOTAS FIJAS";
+        if (raw === "progresivo") return "PROGRESIVO";
+        return modalidad_credito || "—";
+    })();
 
     const generarFechas = () => {
         const n = cantidad_cuotas;
         const hoy = new Date();
         return Array.from({ length: n }, (_, i) => {
             const f = new Date(hoy);
-            if (tipo_credito === 'mensual') f.setMonth(f.getMonth() + i + 1);
-            else if (tipo_credito === 'quincenal') f.setDate(f.getDate() + (i + 1) * 15);
-            else /* semanal */              f.setDate(f.getDate() + (i + 1) * 7);
+            if (tipo_credito === "mensual") f.setMonth(f.getMonth() + i + 1);
+            else if (tipo_credito === "quincenal") f.setDate(f.getDate() + (i + 1) * 15);
+            else /* semanal u otros */ f.setDate(f.getDate() + (i + 1) * 7);
             return fmtFecha(f);
         });
     };
@@ -54,29 +59,66 @@ const PresupuestoCard = ({ presupuesto, onClose }) => {
 
     const descargarPDF = async () => {
         const doc = new jsPDF();
-        const img = new Image();
-        img.src = '/logosye.png';
-        await new Promise((r) => (img.onload = r));
-        doc.addImage(img, 'PNG', 14, 10, 40, 20);
+        const PAGE_W = doc.internal.pageSize.getWidth();
 
-        doc.setFontSize(16);
-        doc.text('Simulación de Crédito', 60, 35);
+        // Logo centrado y escalado
+        try {
+            const img = new Image();
+            img.src = "/logosye.png";
+            await new Promise((r) => {
+                img.onload = () => r();
+                img.onerror = () => r();
+            });
 
-        let y = 45;
+            const MAX_W = 60;
+            const MAX_H = 25;
+            const hasSize = img.width && img.height;
+            const scale = hasSize
+                ? Math.min(MAX_W / img.width, MAX_H / img.height, 1)
+                : 1;
+            const w = hasSize ? img.width * scale : MAX_W;
+            const h = hasSize ? img.height * scale : MAX_H;
+            const x = (PAGE_W - w) / 2;
+
+            doc.addImage(img, "PNG", x, 10, w, h);
+
+            doc.setFontSize(16);
+            doc.setFont("helvetica", "bold");
+            doc.text("Simulación de Crédito", PAGE_W / 2, 10 + h + 10, {
+                align: "center"
+            });
+        } catch {
+            // Si falla la imagen, al menos ponemos el título
+            doc.setFontSize(16);
+            doc.setFont("helvetica", "bold");
+            doc.text("Simulación de Crédito", PAGE_W / 2, 25, { align: "center" });
+        }
+
+        let y = 10 + 40; // después del logo/título
+        doc.setFont("helvetica", "normal");
         doc.setFontSize(11);
-        doc.text(`Presupuesto #${numero}`, 14, y); y += 7;
-        doc.text(`A nombre de: ${nombre_destinatario}`, 14, y); y += 7;
-        doc.text(`Fecha de creación: ${fmtFecha(fecha_creacion)}`, 14, y); y += 7;
-        doc.text(`Monto financiado: $${fmtMoneda(monto_financiado)}`, 14, y); y += 7;
-        doc.text(`Cantidad de cuotas: ${cantidad_cuotas}`, 14, y); y += 7;
-        doc.text(`Interés aplicado: ${percent}%`, 14, y); y += 7;
-        doc.text(`Valor por cuota: $${fmtMoneda(valor_por_cuota)}`, 14, y); y += 7;
-        doc.text(`Total a pagar: $${fmtMoneda(total_a_pagar)}`, 14, y); y += 7;
-        doc.text(`Tipo de crédito: ${tipo_credito}`, 14, y);
+
+        doc.text(`Presupuesto #${numero}`, 14, y);
+        y += 7;
+        doc.text(`A nombre de: ${nombre_destinatario}`, 14, y);
+        y += 7;
+        doc.text(`Emitido por: ${emitido_por || "—"}`, 14, y);
+        y += 7;
+        doc.text(`Fecha de creación: ${fmtFecha(fecha_creacion)}`, 14, y);
+        y += 7;
+        doc.text(`Plan de crédito: ${planLabel}`, 14, y);
+        y += 7;
+        doc.text(`Periodicidad: ${tipo_credito}`, 14, y);
+        y += 7;
+        doc.text(`Cantidad de cuotas: ${cantidad_cuotas}`, 14, y);
+        y += 7;
+        doc.text(`Valor por cuota: $${fmtMoneda(valor_por_cuota)}`, 14, y);
+        y += 7;
+        doc.text(`Total a pagar: $${fmtMoneda(total_a_pagar)}`, 14, y);
 
         autoTable(doc, {
             startY: y + 10,
-            head: [['# Cuota', 'Fecha de Vencimiento']],
+            head: [["# Cuota", "Fecha de Vencimiento"]],
             body: fechas.map((f, i) => [i + 1, f])
         });
 
@@ -92,8 +134,13 @@ const PresupuestoCard = ({ presupuesto, onClose }) => {
                 <X size={20} />
             </button>
 
+            {/* Logo acomodado en front (centrado, manteniendo proporción) */}
             <div className="flex justify-center mb-6">
-                <img src="/logosye.png" alt="Logo" className="h-12" />
+                <img
+                    src="/logosye.png"
+                    alt="Logo"
+                    className="h-12 w-auto object-contain"
+                />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-gray-700 text-sm">
@@ -105,12 +152,20 @@ const PresupuestoCard = ({ presupuesto, onClose }) => {
                     <p className="font-medium">A nombre de:</p>
                     <p>{nombre_destinatario}</p>
                 </div>
+                <div className="space-y-1">
+                    <p className="font-medium">Emitido por:</p>
+                    <p>{emitido_por || "—"}</p>
+                </div>
                 <div className="flex items-center gap-2">
                     <CalendarClock className="text-yellow-600" size={18} />
                     <p>{fmtFecha(fecha_creacion)}</p>
                 </div>
                 <div className="space-y-1">
-                    <p className="font-medium">Tipo crédito:</p>
+                    <p className="font-medium">Plan de crédito:</p>
+                    <p className="capitalize">{planLabel}</p>
+                </div>
+                <div className="space-y-1">
+                    <p className="font-medium">Periodicidad:</p>
                     <p className="capitalize">{tipo_credito}</p>
                 </div>
             </div>
@@ -125,11 +180,6 @@ const PresupuestoCard = ({ presupuesto, onClose }) => {
                     <ListOrdered className="text-blue-600" size={18} />
                     <span>Valor por cuota:</span>
                     <strong>${fmtMoneda(valor_por_cuota)}</strong>
-                </p>
-                <p className="flex items-center gap-2">
-                    <PercentCircle className="text-purple-600" size={18} />
-                    <span>Interés aplicado:</span>
-                    <strong>{percent}%</strong>
                 </p>
                 <p className="flex items-center gap-2">
                     <ListOrdered className="text-gray-600" size={18} />

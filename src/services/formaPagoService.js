@@ -14,6 +14,38 @@ const joinPath = (...parts) =>
 const BASE_FORMAS = joinPath(API_PREFIX, 'formas-pago');
 
 /* ───────────────── Endpoints ───────────────── */
+
+/** Listar formas de pago (para selects, etc.) */
 export const obtenerFormasDePago = () => apiFetch(BASE_FORMAS);
 
-export default { obtenerFormasDePago };
+/** Obtener una forma de pago por ID */
+export const obtenerFormaDePagoPorId = (id) =>
+    apiFetch(joinPath(BASE_FORMAS, id));
+
+/** Crear nueva forma de pago */
+export const crearFormaDePago = (data) =>
+    apiFetch(BASE_FORMAS, {
+        method: 'POST',
+        body: data,
+    });
+
+/** Actualizar forma de pago existente */
+export const actualizarFormaDePago = (id, data) =>
+    apiFetch(joinPath(BASE_FORMAS, id), {
+        method: 'PUT',
+        body: data,
+    });
+
+/** Eliminar forma de pago */
+export const eliminarFormaDePago = (id) =>
+    apiFetch(joinPath(BASE_FORMAS, id), {
+        method: 'DELETE',
+    });
+
+export default {
+    obtenerFormasDePago,
+    obtenerFormaDePagoPorId,
+    crearFormaDePago,
+    actualizarFormaDePago,
+    eliminarFormaDePago,
+};

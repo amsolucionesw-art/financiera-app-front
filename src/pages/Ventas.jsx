@@ -15,7 +15,6 @@ import {
     CreditCard
 } from 'lucide-react';
 import { exportToCSV, exportContableXLSX } from '../utils/exporters';
-import { obtenerFormasDePago } from '../services/cuotaService';
 
 // YYYY-MM-DD en UTC para evitar derivas
 const toYMD = (d) => {
@@ -27,15 +26,30 @@ const toYMD = (d) => {
     const dd = String(dt.getUTCDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
 };
-const today = toYMD(new Date());
-const fmtNum = (n) =>
-    Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+const today = toYMD(new Date());
+
+const fmtNum = (n) =>
+    Number(n || 0).toLocaleString('es-AR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
+
+/**
+ * Normaliza el tipo de crédito/período:
+ * - "semanal"  => "Semanal"
+ * - "quincenal"=> "Quincenal"
+ * - "mensual"  => "Mensual"
+ * - null/""    => "" (string vacío, para que el caller decida qué mostrar)
+ * - otro       => Capitaliza el texto
+ */
 const niceTipo = (s) => {
-    const t = String(s || '').toLowerCase();
+    const t = String(s || '').trim().toLowerCase();
+    if (!t) return '';
     if (t === 'semanal') return 'Semanal';
     if (t === 'quincenal') return 'Quincenal';
-    return 'Mensual';
+    if (t === 'mensual') return 'Mensual';
+    return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
 export default function Ventas() {
@@ -53,30 +67,6 @@ export default function Ventas() {
     const [error, setError] = useState('');
     const [rows, setRows] = useState([]);
 
-    const [formasPago, setFormasPago] = useState([]);
-    useEffect(() => {
-        (async () => {
-            try {
-                const fps = await obtenerFormasDePago();
-                setFormasPago(Array.isArray(fps) ? fps : []);
-            } catch {
-                setFormasPago([]);
-            }
-        })();
-    }, []);
-
-    // Map rápido id->nombre (evita .find() por fila)
-    const fpMap = useMemo(() => {
-        const m = new Map();
-        for (const f of formasPago) m.set(String(f.id), f.nombre);
-        return m;
-    }, [formasPago]);
-
-    const fpNombre = (id) => {
-        if (id == null) return 'Sin especificar';
-        return fpMap.get(String(id)) || `FP #${id}`;
-    };
-
     const fetchData = useCallback(async () => {
         setLoading(true);
         setError('');
@@ -86,7 +76,7 @@ export default function Ventas() {
                 hasta: hasta || undefined,
                 mes: mes || undefined,
                 anio: anio || undefined,
-                q: q || undefined,
+                q: q || undefined
             };
             const data = await listarVentas(params);
             setRows(Array.isArray(data) ? data : []);
@@ -128,7 +118,7 @@ export default function Ventas() {
             showCancelButton: true,
             confirmButtonText: 'Sí, eliminar',
             cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#dc2626',
+            confirmButtonColor: '#dc2626'
         });
         if (!conf.isConfirmed) return;
 
@@ -154,7 +144,7 @@ export default function Ventas() {
         setQ('');
     };
 
-    // Exportación CSV
+    // Exportación CSV (sin forma de pago)
     const exportarCSV = () => {
         const archivo = `ventas-${desde || ''}_a_${hasta || ''}.csv`;
         const rowsCSV = (rows || []).map((r) => ({
@@ -167,18 +157,17 @@ export default function Ventas() {
             'RET GAN': Number(r.ret_gan || 0).toFixed(2).replace('.', ','),
             'RETIVA': Number(r.ret_iva || 0).toFixed(2).replace('.', ','),
             'RET IIBB TUC': Number(r.ret_iibb_tuc || 0).toFixed(2).replace('.', ','),
-            'capital': Number(r.capital || 0).toFixed(2).replace('.', ','),
-            'interes': Number(r.interes || 0).toFixed(2).replace('.', ','),
-            'cuotas': Number(r.cuotas || 0),
-            'tipo_credito': r.tipo_credito || '',
-            'credito_id': r.credito_id ?? '',
-            'TOTAL': Number(r.total || 0).toFixed(2).replace('.', ','),
-            'FORMA DE PAGO': fpNombre(r.forma_pago_id),
+            capital: Number(r.capital || 0).toFixed(2).replace('.', ','),
+            interes: Number(r.interes || 0).toFixed(2).replace('.', ','),
+            cuotas: Number(r.cuotas || 0),
+            tipo_credito: r.tipo_credito || '',
+            credito_id: r.credito_id ?? '',
+            TOTAL: Number(r.total || 0).toFixed(2).replace('.', ','),
             'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
             'BONIFICACION (FALSO / VERD)': r.bonificacion ? 'VERDADERO' : 'FALSO',
-            'VENDEDOR': r.vendedor || '',
-            'MES': r.mes ?? '',
-            'AÑO': r.anio ?? '',
+            VENDEDOR: r.vendedor || '',
+            MES: r.mes ?? '',
+            AÑO: r.anio ?? ''
         }));
 
         exportToCSV(archivo, rowsCSV, [
@@ -197,39 +186,37 @@ export default function Ventas() {
             'tipo_credito',
             'credito_id',
             'TOTAL',
-            'FORMA DE PAGO',
             'FECHA FIN DE FINANCIACION',
             'BONIFICACION (FALSO / VERD)',
             'VENDEDOR',
             'MES',
-            'AÑO',
+            'AÑO'
         ]);
     };
 
-    // Exportación Excel (XLSX)
+    // Exportación Excel (XLSX) sin forma de pago
     const exportarXLSX = async () => {
         const data = (rows || []).map((r) => ({
             'FECHA IMPUTACION': r.fecha_imputacion || '',
             'N° DE COMP': r.numero_comprobante || '',
             'NOMBRE Y APELLIDO': r.cliente_nombre || '',
             'CUIT-CUIL/ DNI': r.doc_cliente || '',
-            'NETO': Number(r.neto || 0),
-            'IVA': Number(r.iva || 0),
+            NETO: Number(r.neto || 0),
+            IVA: Number(r.iva || 0),
             'RET GAN': Number(r.ret_gan || 0),
-            'RETIVA': Number(r.ret_iva || 0),
+            RETIVA: Number(r.ret_iva || 0),
             'RET IIBB TUC': Number(r.ret_iibb_tuc || 0),
-            'capital': Number(r.capital || 0),
-            'interes': Number(r.interes || 0),
-            'cuotas': Number(r.cuotas || 0),
-            'tipo_credito': r.tipo_credito || '',
-            'credito_id': r.credito_id ?? '',
-            'TOTAL': Number(r.total || 0),
-            'FORMA DE PAGO': fpNombre(r.forma_pago_id),
+            capital: Number(r.capital || 0),
+            interes: Number(r.interes || 0),
+            cuotas: Number(r.cuotas || 0),
+            tipo_credito: r.tipo_credito || '',
+            credito_id: r.credito_id ?? '',
+            TOTAL: Number(r.total || 0),
             'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
             'BONIFICACION (FALSO / VERD)': r.bonificacion ? 'VERDADERO' : 'FALSO',
-            'VENDEDOR': r.vendedor || '',
-            'MES': r.mes ?? '',
-            'AÑO': r.anio ?? '',
+            VENDEDOR: r.vendedor || '',
+            MES: r.mes ?? '',
+            AÑO: r.anio ?? ''
         }));
 
         await exportContableXLSX({ ventas: data }, `ventas-${desde || ''}_a_${hasta || ''}.xlsx`);
@@ -334,7 +321,9 @@ export default function Ventas() {
                         />
                     </div>
                     <div className="md:col-span-3">
-                        <label className="block text-xs font-medium text-gray-700">Buscar (cliente / nro / vendedor)</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Buscar (cliente / nro / vendedor)
+                        </label>
                         <input
                             value={q}
                             onChange={(e) => setQ(e.target.value)}
@@ -383,7 +372,10 @@ export default function Ventas() {
                 )}
 
                 {rows.map((r, idx) => {
-                    const tieneFinanciacion = Number(r.capital || 0) > 0 && Number(r.cuotas || 0) > 1;
+                    const tieneFinanciacion =
+                        Number(r.capital || 0) > 0 && Number(r.cuotas || 0) > 1;
+                    const labelTipo = niceTipo(r.tipo_credito);
+
                     return (
                         <div
                             key={r.id}
@@ -404,44 +396,58 @@ export default function Ventas() {
                             <div className="mt-2">
                                 <div className="text-xs text-gray-500">N° Comprobante</div>
                                 <div className="font-mono text-sm">
-                                    {r.numero_comprobante || <span className="text-gray-400">—</span>}
+                                    {r.numero_comprobante || (
+                                        <span className="text-gray-400">—</span>
+                                    )}
                                 </div>
                             </div>
 
                             <div className="mt-2">
                                 <div className="text-xs text-gray-500">Cliente</div>
                                 <div className="font-medium">{r.cliente_nombre}</div>
-                                <div className="text-xs text-gray-500">{r.doc_cliente || '-'}</div>
+                                <div className="text-xs text-gray-500">
+                                    {r.doc_cliente || '-'}
+                                </div>
                             </div>
 
                             <div className="mt-3 grid grid-cols-3 gap-2">
                                 <div>
                                     <div className="text-[11px] text-gray-500">Capital</div>
-                                    <div className="text-sm font-semibold text-right">{fmtNum(r.capital)}</div>
+                                    <div className="text-sm font-semibold text-right">
+                                        {fmtNum(r.capital)}
+                                    </div>
                                 </div>
                                 <div>
                                     <div className="text-[11px] text-gray-500">Interés</div>
-                                    <div className="text-sm font-semibold text-right">{fmtNum(r.interes)}</div>
+                                    <div className="text-sm font-semibold text-right">
+                                        {fmtNum(r.interes)}
+                                    </div>
                                 </div>
                                 <div>
                                     <div className="text-[11px] text-gray-500">Total</div>
-                                    <div className="text-sm font-semibold text-right">{fmtNum(r.total)}</div>
+                                    <div className="text-sm font-semibold text-right">
+                                        {fmtNum(r.total)}
+                                    </div>
                                 </div>
                             </div>
 
                             {tieneFinanciacion ? (
                                 <div className="mt-2 text-xs text-gray-700">
-                                    {niceTipo(r.tipo_credito)} · {r.cuotas} cuota{Number(r.cuotas) === 1 ? '' : 's'}
+                                    {labelTipo
+                                        ? `${labelTipo} · ${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
+                                        }`
+                                        : `${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
+                                        }`}
                                 </div>
                             ) : (
-                                <div className="mt-2 text-xs text-gray-400">Sin financiación</div>
+                                <div className="mt-2 text-xs text-gray-400">
+                                    Sin financiación
+                                </div>
                             )}
 
-                            <div className="mt-2 text-xs text-gray-500">
-                                FP: <span className="text-gray-800">{fpNombre(r.forma_pago_id)}</span>
-                            </div>
-                            <div className="text-xs text-gray-500">
-                                Vendedor: <span className="text-gray-800">{r.vendedor || '-'}</span>
+                            <div className="text-xs text-gray-500 mt-1">
+                                Vendedor:{' '}
+                                <span className="text-gray-800">{r.vendedor || '-'}</span>
                             </div>
 
                             <div className="mt-2 text-xs text-gray-500">
@@ -452,7 +458,8 @@ export default function Ventas() {
                                         className="inline-flex items-center gap-1 text-blue-600 hover:underline"
                                         title="Ver crédito"
                                     >
-                                        #{r.credito_id} <ExternalLink className="h-3.5 w-3.5" />
+                                        #{r.credito_id}{' '}
+                                        <ExternalLink className="h-3.5 w-3.5" />
                                     </Link>
                                 ) : (
                                     <span className="text-gray-400">—</span>
@@ -483,15 +490,21 @@ export default function Ventas() {
                         <div className="mt-2 grid grid-cols-3 gap-2">
                             <div>
                                 <div className="text-[11px] text-gray-500">Capital</div>
-                                <div className="text-sm font-semibold text-right">{fmtNum(totals.capital)}</div>
+                                <div className="text-sm font-semibold text-right">
+                                    {fmtNum(totals.capital)}
+                                </div>
                             </div>
                             <div>
                                 <div className="text-[11px] text-gray-500">Interés</div>
-                                <div className="text-sm font-semibold text-right">{fmtNum(totals.interes)}</div>
+                                <div className="text-sm font-semibold text-right">
+                                    {fmtNum(totals.interes)}
+                                </div>
                             </div>
                             <div>
                                 <div className="text-[11px] text-gray-500">Total</div>
-                                <div className="text-sm font-semibold text-right">{fmtNum(totals.total)}</div>
+                                <div className="text-sm font-semibold text-right">
+                                    {fmtNum(totals.total)}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -516,7 +529,6 @@ export default function Ventas() {
                             <th className="px-3 py-2 text-right font-medium">Interés</th>
                             <th className="px-3 py-2 text-left font-medium">Financiación</th>
                             <th className="px-3 py-2 text-right font-medium">Total</th>
-                            <th className="px-3 py-2 text-left font-medium">FP</th>
                             <th className="px-3 py-2 text-left font-medium">Vendedor</th>
                             <th className="px-3 py-2 text-left font-medium">Crédito</th>
                             <th className="px-3 py-2 text-right font-medium w-48">Acciones</th>
@@ -525,17 +537,28 @@ export default function Ventas() {
                     <tbody className="divide-y divide-gray-100">
                         {rows.length === 0 && !loading && (
                             <tr>
-                                <td colSpan={11} className="px-3 py-6 text-center text-gray-500">
+                                <td
+                                    colSpan={10}
+                                    className="px-3 py-6 text-center text-gray-500"
+                                >
                                     Sin resultados
                                 </td>
                             </tr>
                         )}
                         {rows.map((r, idx) => {
-                            const tieneFinanciacion = Number(r.capital || 0) > 0 && Number(r.cuotas || 0) > 1;
+                            const tieneFinanciacion =
+                                Number(r.capital || 0) > 0 &&
+                                Number(r.cuotas || 0) > 1;
+                            const labelTipo = niceTipo(r.tipo_credito);
+
                             return (
                                 <tr
                                     key={r.id}
-                                    className={idx % 2 === 0 ? 'bg-white hover:bg-gray-50' : 'bg-gray-50 hover:bg-gray-100'}
+                                    className={
+                                        idx % 2 === 0
+                                            ? 'bg-white hover:bg-gray-50'
+                                            : 'bg-gray-50 hover:bg-gray-100'
+                                    }
                                 >
                                     <td className="px-3 py-2">{r.fecha_imputacion}</td>
                                     <td className="px-3 py-2">
@@ -551,23 +574,36 @@ export default function Ventas() {
                                         <div className="text-gray-900 flex items-center gap-2">
                                             {r.cliente_nombre}
                                             {tieneFinanciacion && (
-                                            <span className="text-xs rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
-                                                Financiada
-                                            </span>
+                                                <span className="text-xs rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
+                                                    Financiada
+                                                </span>
                                             )}
                                         </div>
-                                        <div className="text-gray-500 text-xs">{r.doc_cliente || '-'}</div>
+                                        <div className="text-gray-500 text-xs">
+                                            {r.doc_cliente || '-'}
+                                        </div>
                                     </td>
-                                    <td className="px-3 py-2 text-right">{fmtNum(r.capital)}</td>
-                                    <td className="px-3 py-2 text-right">{fmtNum(r.interes)}</td>
+                                    <td className="px-3 py-2 text-right">
+                                        {fmtNum(r.capital)}
+                                    </td>
+                                    <td className="px-3 py-2 text-right">
+                                        {fmtNum(r.interes)}
+                                    </td>
                                     <td className="px-3 py-2">
                                         {tieneFinanciacion
-                                            ? `${niceTipo(r.tipo_credito)} · ${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'}`
+                                            ? labelTipo
+                                                ? `${labelTipo} · ${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
+                                                }`
+                                                : `${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
+                                                }`
                                             : '-'}
                                     </td>
-                                    <td className="px-3 py-2 text-right font-medium">{fmtNum(r.total)}</td>
-                                    <td className="px-3 py-2">{fpNombre(r.forma_pago_id)}</td>
-                                    <td className="px-3 py-2">{r.vendedor || '-'}</td>
+                                    <td className="px-3 py-2 text-right font-medium">
+                                        {fmtNum(r.total)}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                        {r.vendedor || '-'}
+                                    </td>
                                     <td className="px-3 py-2">
                                         {r.credito_id ? (
                                             <Link
@@ -575,7 +611,8 @@ export default function Ventas() {
                                                 className="inline-flex items-center gap-1 text-blue-600 hover:underline"
                                                 title="Ver crédito"
                                             >
-                                                #{r.credito_id} <ExternalLink className="h-3.5 w-3.5" />
+                                                #{r.credito_id}{' '}
+                                                <ExternalLink className="h-3.5 w-3.5" />
                                             </Link>
                                         ) : (
                                             <span className="text-gray-400">—</span>
@@ -605,14 +642,23 @@ export default function Ventas() {
                     {rows.length > 0 && (
                         <tfoot className="bg-gray-50 border-t border-gray-100">
                             <tr>
-                                <td className="px-3 py-2 text-right font-medium" colSpan={3}>
+                                <td
+                                    className="px-3 py-2 text-right font-medium"
+                                    colSpan={3}
+                                >
                                     Totales
                                 </td>
-                                <td className="px-3 py-2 text-right font-semibold">{fmtNum(totals.capital)}</td>
-                                <td className="px-3 py-2 text-right font-semibold">{fmtNum(totals.interes)}</td>
-                                <td className="px-3 py-2"></td>
-                                <td className="px-3 py-2 text-right font-semibold">{fmtNum(totals.total)}</td>
-                                <td colSpan={4}></td>
+                                <td className="px-3 py-2 text-right font-semibold">
+                                    {fmtNum(totals.capital)}
+                                </td>
+                                <td className="px-3 py-2 text-right font-semibold">
+                                    {fmtNum(totals.interes)}
+                                </td>
+                                <td className="px-3 py-2" />
+                                <td className="px-3 py-2 text-right font-semibold">
+                                    {fmtNum(totals.total)}
+                                </td>
+                                <td colSpan={3} />
                             </tr>
                         </tfoot>
                     )}
@@ -621,3 +667,4 @@ export default function Ventas() {
         </div>
     );
 }
+

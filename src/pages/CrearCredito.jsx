@@ -59,7 +59,7 @@ const CrearCredito = () => {
         [clientes]
     );
 
-    // Carga inicial
+    // Carga inicial (cobradores + posibles preselecciones)
     useEffect(() => {
         let mounted = true;
 
@@ -69,13 +69,11 @@ const CrearCredito = () => {
             try {
                 const _cobradores = await obtenerCobradoresBasico();
                 if (!mounted) return;
-                setCobradores(_cobradores || []);
+                setCobradores(Array.isArray(_cobradores) ? _cobradores : []);
 
                 // Preselecciones
                 const preClienteId =
-                    pathClienteId ??
-                    (qsClienteId ? Number(qsClienteId) : null);
-
+                    pathClienteId ?? (qsClienteId ? Number(qsClienteId) : null);
                 let preCobradorId = qsCobradorId ? Number(qsCobradorId) : null;
 
                 // Si viene cliente y no viene cobrador, inferimos su cobrador
@@ -83,17 +81,21 @@ const CrearCredito = () => {
                     try {
                         const cli = await obtenerClientePorId(preClienteId);
                         if (cli?.cobradorUsuario?.id) preCobradorId = Number(cli.cobradorUsuario.id);
-                    } catch { /* noop */ }
+                    } catch {
+                        /* noop */
+                    }
                 }
 
                 if (preCobradorId) setCobradorSel(preCobradorId);
 
-                const _clientes = await obtenerClientesBasico(preCobradorId ? { cobrador: preCobradorId } : {});
+                const _clientes = await obtenerClientesBasico(
+                    preCobradorId ? { cobrador: preCobradorId } : {}
+                );
                 if (!mounted) return;
-                setClientes(_clientes || []);
+                setClientes(Array.isArray(_clientes) ? _clientes : []);
 
                 if (preClienteId) {
-                    const exists = (_clientes || []).some(c => Number(c.id) === preClienteId);
+                    const exists = (Array.isArray(_clientes) ? _clientes : []).some(c => Number(c.id) === preClienteId);
                     if (!exists) {
                         // si el cliente no entra por filtro, lo agregamos para poder seleccionarlo
                         try {
@@ -106,9 +108,15 @@ const CrearCredito = () => {
                                     cobrador: cli.cobrador ?? cli?.cobradorUsuario?.id ?? null,
                                     zona: cli.zona ?? cli?.clienteZona?.id ?? null
                                 };
-                                setClientes(prev => (prev.some(p => Number(p.id) === Number(item.id)) ? prev : [...prev, item]));
+                                setClientes(prev =>
+                                    Array.isArray(prev) && prev.some(p => Number(p.id) === Number(item.id))
+                                        ? prev
+                                        : [...(prev || []), item]
+                                );
                             }
-                        } catch { /* noop */ }
+                        } catch {
+                            /* noop */
+                        }
                     }
                     setClienteSel(preClienteId);
                 }
@@ -124,16 +132,20 @@ const CrearCredito = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // Al cambiar cobrador → recargar clientes filtrados
+    // Al cambiar cobrador → recargar clientes filtrados y validar selección previa
     useEffect(() => {
         let mounted = true;
         const fetchClientes = async () => {
             try {
-                const resp = await obtenerClientesBasico(cobradorSel == null ? {} : { cobrador: cobradorSel });
+                const resp = await obtenerClientesBasico(
+                    cobradorSel == null ? {} : { cobrador: cobradorSel }
+                );
                 if (!mounted) return;
-                setClientes(resp || []);
+                const arr = Array.isArray(resp) ? resp : [];
+                setClientes(arr);
+
                 if (clienteSel != null) {
-                    const pertenece = (resp || []).some(c => Number(c.id) === Number(clienteSel));
+                    const pertenece = arr.some(c => Number(c.id) === Number(clienteSel));
                     if (!pertenece) setClienteSel(null);
                 }
             } catch (e) {
@@ -148,7 +160,7 @@ const CrearCredito = () => {
     // Si eligen cliente primero → sincronizar cobrador si aplica
     useEffect(() => {
         if (clienteSel == null) return;
-        const cli = clientes.find(c => Number(c.id) === Number(clienteSel));
+        const cli = (clientes || []).find(c => Number(c.id) === Number(clienteSel));
         if (!cli) return;
         const cobradorDeCliente = cli?.cobrador ? Number(cli.cobrador) : null;
         if (cobradorDeCliente && cobradorSel !== cobradorDeCliente) {
@@ -159,8 +171,22 @@ const CrearCredito = () => {
 
     const puedeMostrarForm = clienteSel != null && cobradorSel != null;
 
+    const extraerNuevoId = (resp) => {
+        if (resp == null) return null;
+        if (typeof resp === 'number') return resp;
+        if (typeof resp === 'string' && /^\d+$/.test(resp)) return Number(resp);
+        if (typeof resp === 'object') {
+            if (typeof resp.id === 'number') return resp.id;
+            if (resp.data) {
+                if (typeof resp.data.id === 'number') return resp.data.id;
+                if (resp.data.data && typeof resp.data.data.id === 'number') return resp.data.data.id;
+            }
+        }
+        return null;
+    };
+
     const handleCrear = async (formPayload) => {
-        if (!puedeMostrarForm) return;
+        if (!puedeMostrarForm || enviando) return;
         setEnviando(true);
         setError('');
         try {
@@ -169,17 +195,11 @@ const CrearCredito = () => {
                 cliente_id: Number(clienteSel),
                 cobrador_id: Number(formPayload.cobrador_id || cobradorSel)
             };
+
+            // Nota: CreditForm ya asegura reglas de LIBRE (tipo mensual, 1 cuota, interés=60)
             const resp = await crearCredito(payload);
 
-            // Intento obtener el ID del nuevo crédito (soporta varios formatos de respuesta)
-            let nuevoId = null;
-            if (typeof resp === 'number') {
-                nuevoId = resp;
-            } else if (resp && typeof resp === 'object') {
-                if (typeof resp.id === 'number') nuevoId = resp.id;
-                else if (resp.data && typeof resp.data.id === 'number') nuevoId = resp.data.id;
-            }
-
+            const nuevoId = extraerNuevoId(resp);
             if (nuevoId) {
                 navigate(`/creditos/${nuevoId}`, { replace: true });
             } else {
@@ -218,6 +238,7 @@ const CrearCredito = () => {
                             onChange={setCobradorSel}
                             options={opcionesCobradores}
                             placeholder="Seleccione cobrador"
+                            disabled={enviando}
                         />
                         <Select
                             label="Cliente"
@@ -225,6 +246,7 @@ const CrearCredito = () => {
                             onChange={setClienteSel}
                             options={opcionesClientes}
                             placeholder={cobradorSel ? 'Clientes del cobrador' : 'Todos los clientes'}
+                            disabled={enviando}
                         />
                     </div>
                 )}
@@ -253,6 +275,3 @@ const CrearCredito = () => {
 };
 
 export default CrearCredito;
-
-
-

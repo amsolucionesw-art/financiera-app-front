@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { obtenerFormasDePago } from '../services/cuotaService';
 import { cancelarCredito } from '../services/creditoService';
+import { obtenerRecibosPorCredito } from '../services/reciboService';
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const clamp = (n, min, max) => Math.min(Math.max(Number(n) || 0, min), max);
@@ -15,12 +16,56 @@ const fmtAR = (n) =>
         maximumFractionDigits: 2
     });
 
+/* ───────────────── Helpers de navegación/recibo ───────────────── */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Intenta extraer numero_recibo de distintas formas del response */
+const numeroDesdeResponse = (resp) =>
+    resp?.numero_recibo ??
+    resp?.data?.numero_recibo ??
+    resp?.recibo?.numero_recibo ??
+    resp?.data?.recibo?.numero_recibo ??
+    null;
+
+/** Ordena lista de recibos por recencia (numero_recibo DESC; si empate, fecha+hora) */
+const ordenarRecibos = (lista = []) => {
+    return [...lista].sort((a, b) => {
+        const na = Number(a?.numero_recibo || 0);
+        const nb = Number(b?.numero_recibo || 0);
+        if (nb !== na) return nb - na;
+        const fa = `${a?.fecha || ''} ${a?.hora || ''}`;
+        const fb = `${b?.fecha || ''} ${b?.hora || ''}`;
+        return fb.localeCompare(fa);
+    });
+};
+
+/**
+ * Busca el último recibo del crédito con polling corto.
+ * @returns numero_recibo | null
+ */
+const buscarUltimoReciboConPolling = async (creditoId, intentos = 3, delayMs = 600) => {
+    for (let i = 0; i < intentos; i++) {
+        try {
+            const lista = await obtenerRecibosPorCredito(creditoId);
+            if (Array.isArray(lista) && lista.length > 0) {
+                const ult = ordenarRecibos(lista)[0];
+                if (ult?.numero_recibo) return ult.numero_recibo;
+            }
+        } catch {
+            // silencioso
+        }
+        await sleep(delayMs);
+    }
+    return null;
+};
+
 const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
     const navigate = useNavigate();
 
     const [formas, setFormas] = useState([]);
     const [formaId, setFormaId] = useState('');
     const [descuentoPct, setDescuentoPct] = useState('');
+    const [ambito, setAmbito] = useState('mora'); // 'mora' | 'total'
     const [observacion, setObservacion] = useState('');
     const [submitting, setSubmitting] = useState(false);
 
@@ -36,7 +81,7 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
         })();
     }, []);
 
-    // Estimaciones locales
+    /* ========= Estimaciones locales (informativas) ========= */
     const principalPendiente = round2(
         (credito?.cuotas || []).reduce((acc, q) => {
             const imp = Number(q.importe_cuota || 0);
@@ -53,14 +98,22 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
         )
     );
 
+    const baseTotal = round2(principalPendiente + moraAcum);
+
     const dPct = clamp(descuentoPct, 0, 100);
-    const descuentoMontoEst = round2(principalPendiente * (dPct / 100));
-    const totalEstimado = round2((principalPendiente - descuentoMontoEst) + moraAcum);
+    const descuentoEstimado =
+        ambito === 'total'
+            ? round2(baseTotal * (dPct / 100))
+            : round2(moraAcum * (dPct / 100));
+
+    const totalEstimado =
+        ambito === 'total'
+            ? round2(Math.max(baseTotal - descuentoEstimado, 0))
+            : round2(principalPendiente + Math.max(moraAcum - descuentoEstimado, 0));
 
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        // Validaciones rápidas UI
         if (!formaId) {
             Swal.fire('Atención', 'Seleccioná una forma de pago.', 'warning');
             return;
@@ -75,24 +128,47 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
             const resp = await cancelarCredito(credito.id, {
                 forma_pago_id: Number(formaId),
                 descuento_porcentaje: Number(dPct),
+                descuento_sobre: ambito,
                 observacion
             });
 
-            // Soporta respuestas {recibo} o {data:{recibo}}
-            const recibo = resp?.recibo ?? resp?.data?.recibo;
-            const numero = recibo?.numero_recibo;
-
             await Swal.fire('¡Crédito cancelado!', 'Se generó el pago y el recibo resumen.', 'success');
 
-            onClose?.();
-            onSuccess?.();
+            // 1) Intento directo
+            let numero = numeroDesdeResponse(resp);
+
+            // 2) Fallback con polling corto si no lo obtuvimos
+            if (!numero) {
+                numero = await buscarUltimoReciboConPolling(credito.id, 3, 600);
+            }
 
             if (numero) {
-                navigate(`/recibo/${numero}`);
+                try {
+                    // Preferimos SPA
+                    navigate(`/recibo/${encodeURIComponent(numero)}`);
+                } catch {
+                    // Si por alguna razón el Router no enruta (contexto, wrappers, etc.), forzamos
+                    window.location.assign(`/recibo/${encodeURIComponent(numero)}`);
+                }
+                // Cerramos luego de disparar la navegación
+                onClose?.();
+                onSuccess?.();
+            } else {
+                await Swal.fire({
+                    icon: 'warning',
+                    title: 'Recibo emitido, pero no pude detectarlo',
+                    text: 'No pude obtener el número del recibo automáticamente. Podés abrirlo desde "Ver recibos".'
+                });
+                onClose?.();
+                onSuccess?.();
             }
-        } catch (e) {
-            console.error(e);
-            Swal.fire('Error', e?.message || 'No se pudo cancelar el crédito', 'error');
+        } catch (e2) {
+            console.error(e2);
+            const msg =
+                e2?.response?.data?.message ||
+                e2?.message ||
+                'No se pudo cancelar el crédito';
+            Swal.fire('Error', msg, 'error');
         } finally {
             setSubmitting(false);
         }
@@ -100,6 +176,14 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
 
     const inputClass =
         'mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500';
+
+    const radioClass =
+        'inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm cursor-pointer select-none';
+
+    const helperSegunAmbito =
+        ambito === 'total'
+            ? 'El descuento se aplica sobre (principal + mora).'
+            : 'El descuento se aplica SOLO sobre la mora del día.';
 
     return (
         <section className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/50 p-4">
@@ -126,11 +210,49 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                         <dd className="mt-0.5 font-medium">${fmtAR(moraAcum)}</dd>
                     </div>
                     <div className="col-span-2">
+                        <dt className="text-gray-600">Ámbito del descuento</dt>
+                        <dd className="mt-1 flex items-center gap-2">
+                            <label
+                                className={`${radioClass} ${ambito === 'mora' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'}`}
+                            >
+                                <input
+                                    type="radio"
+                                    name="ambito"
+                                    value="mora"
+                                    checked={ambito === 'mora'}
+                                    onChange={() => setAmbito('mora')}
+                                    className="hidden"
+                                />
+                                <span>Solo sobre mora</span>
+                            </label>
+                            <label
+                                className={`${radioClass} ${ambito === 'total' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'}`}
+                            >
+                                <input
+                                    type="radio"
+                                    name="ambito"
+                                    value="total"
+                                    checked={ambito === 'total'}
+                                    onChange={() => setAmbito('total')}
+                                    className="hidden"
+                                />
+                                <span>Sobre total</span>
+                            </label>
+                        </dd>
+                        <p className="mt-1 text-xs text-gray-500">{helperSegunAmbito}</p>
+                    </div>
+
+                    <div className="col-span-2">
+                        <dt className="text-gray-600">Descuento estimado</dt>
+                        <dd className="mt-0.5 font-medium">-${fmtAR(descuentoEstimado)}</dd>
+                    </div>
+
+                    <div className="col-span-2">
                         <dt className="text-gray-600">Total estimado a pagar</dt>
                         <dd className="mt-0.5 font-medium">
                             ${fmtAR(totalEstimado)}{' '}
                             <span className="text-xs text-gray-500">
-                                (el descuento aplica solo a principal; la mora del día se recalcula en servidor)
+                                (la mora del día se recalcula en servidor antes de emitir el recibo)
                             </span>
                         </dd>
                     </div>
@@ -160,7 +282,7 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                     <div>
                         <label className="flex items-center gap-2 text-sm font-medium">
                             <Percent size={16} className="text-emerald-600" />
-                            Descuento (sobre principal)
+                            Descuento (%)
                         </label>
                         <input
                             type="number"
@@ -174,7 +296,9 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                             inputMode="decimal"
                         />
                         <p className="mt-1 text-xs text-gray-500">
-                            Máx: 100%. Aplicado proporcionalmente al principal de cada cuota.
+                            {ambito === 'total'
+                                ? 'Se aplica sobre (principal + mora).'
+                                : 'Se aplica proporcionalmente sobre la mora del día (no sobre el capital).'}
                         </p>
                     </div>
 

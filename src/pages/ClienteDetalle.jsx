@@ -2,11 +2,17 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { obtenerCreditosPorCliente } from '../services/creditoService';
+import {
+    obtenerCreditosPorCliente,
+    solicitarAnulacionCredito,
+    eliminarCreditoSeguro
+} from '../services/creditoService';
 import InfoCliente from '../components/InfoCliente';
 // ⬇️ usamos CreditItem en lugar de InfoCreditos
 import CreditItem from '../components/CreditItem';
 import { ChevronLeft } from 'lucide-react';
+import Swal from 'sweetalert2';
+import { jwtDecode } from 'jwt-decode';
 
 /* ======= Chips de estado (estilo consistente con Gestión) ======= */
 const estadoChip = (estadoRaw) => {
@@ -165,6 +171,24 @@ const ClienteDetalle = () => {
     const [error, setError] = useState('');
     const [abiertoId, setAbiertoId] = useState(null);
 
+    // === Rol actual para habilitar acciones ===
+    const token = typeof window !== 'undefined'
+        ? (localStorage.getItem('token') || sessionStorage.getItem('token'))
+        : null;
+
+    let rol_id = null;
+    try {
+        if (token) {
+            const decoded = jwtDecode(token);
+            rol_id = typeof decoded?.rol_id === 'number' ? decoded.rol_id : Number(decoded?.rol_id ?? null);
+        }
+    } catch {
+        rol_id = null;
+    }
+
+    // Para evitar duplicar solicitudes del mismo crédito en la sesión (solo ADMIN)
+    const [solicitudesPendientesLocal, setSolicitudesPendientesLocal] = useState(() => new Set());
+
     /*  🔄  Trae o vuelve a traer todos los datos  */
     const fetchCreditos = useCallback(async () => {
         try {
@@ -190,21 +214,125 @@ const ClienteDetalle = () => {
     const onEdit = () =>
         window.alert('La edición se realiza desde Gestión de Créditos.');
 
-    const onDelete = () =>
+    // 🧰 Acciones de borrar/anular según rol
+    const onDelete = async (credito) => {
+        const creditoId = credito?.id;
+        if (!creditoId) {
+            window.alert('Crédito inválido.');
+            return;
+        }
+
+        const estado = String(credito?.estado || '').toLowerCase();
+
+        // 🚫 Bloqueamos anulación / eliminación para créditos pagados desde la ficha del cliente
+        if (estado === 'pagado' || estado === 'pagada') {
+            await Swal.fire({
+                title: 'Acción no disponible',
+                text: 'No se puede anular o eliminar un crédito pagado desde la ficha del cliente.',
+                icon: 'info',
+                confirmButtonText: 'OK'
+            });
+            return;
+        }
+
+        const refinanciadoOriginal = estado === 'refinanciado';
+        const anulado = estado === 'anulado';
+        if (refinanciadoOriginal || anulado) {
+            window.alert('Acción no disponible para este crédito.');
+            return;
+        }
+
+        if (rol_id === 0) {
+            // SUPERADMIN → eliminar directo
+            const ok = await Swal.fire({
+                title: `¿Eliminar crédito #${creditoId}?`,
+                text: 'Esta acción es permanente. Si el crédito tiene pagos registrados, no podrá eliminarse.',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#dc2626',
+                cancelButtonColor: '#6b7280',
+                confirmButtonText: 'Sí, eliminar',
+                cancelButtonText: 'Cancelar'
+            }).then(r => r.isConfirmed);
+
+            if (!ok) return;
+
+            try {
+                await eliminarCreditoSeguro(creditoId);
+                await fetchCreditos();
+                await Swal.fire('Eliminado', 'El crédito fue eliminado correctamente.', 'success');
+            } catch (e) {
+                const msg = e?.message || 'No se pudo eliminar el crédito.';
+                await Swal.fire('Error', msg, 'error');
+            }
+            return;
+        }
+
+        if (rol_id === 1) {
+            // ADMIN → solicitar anulación
+            if (solicitudesPendientesLocal.has(creditoId)) {
+                window.alert('Ya enviaste una solicitud de anulación para este crédito y aún está pendiente.');
+                return;
+            }
+
+            const { isConfirmed, value: motivo } = await Swal.fire({
+                title: `Solicitar anulación del crédito #${creditoId}`,
+                input: 'textarea',
+                inputLabel: 'Motivo (obligatorio)',
+                inputPlaceholder: 'Ingresá el motivo de la solicitud…',
+                inputAttributes: { 'aria-label': 'Motivo' },
+                inputValidator: (v) => (!v || !v.trim() ? 'El motivo es obligatorio' : undefined),
+                showCancelButton: true,
+                confirmButtonText: 'Enviar solicitud',
+                cancelButtonText: 'Cancelar',
+                icon: 'warning',
+                focusConfirm: true,
+            });
+
+            if (!isConfirmed) return;
+
+            try {
+                setSolicitudesPendientesLocal((prev) => new Set(prev).add(creditoId));
+                await solicitarAnulacionCredito({ creditoId, motivo: motivo.trim() });
+                await fetchCreditos();
+                await Swal.fire({
+                    title: 'Solicitud enviada',
+                    text: 'El superadmin revisará y aprobará o rechazará tu solicitud.',
+                    icon: 'success',
+                    confirmButtonText: 'OK'
+                });
+            } catch (e) {
+                setSolicitudesPendientesLocal((prev) => {
+                    const next = new Set(prev);
+                    next.delete(creditoId);
+                    return next;
+                });
+                await Swal.fire({
+                    title: 'No se pudo enviar la solicitud',
+                    text: e?.message || 'Error inesperado',
+                    icon: 'error',
+                    confirmButtonText: 'OK'
+                });
+            }
+            return;
+        }
+
+        // Otros roles (cobrador u otros)
         window.alert('La eliminación se gestiona desde Gestión de Créditos.');
+    };
 
     return (
         <div>
             {/* Botón para volver atrás */}
             <button
                 onClick={() => navigate(-1)}
-                className="flex items-center gap-1 text-sky-600 hover:underline mb-4"
+                className="mb-4 flex items-center gap-1 text-sky-600 hover:underline"
             >
                 <ChevronLeft size={18} />
                 Volver
             </button>
 
-            <h2 className="text-2xl font-bold mb-4">Ficha del Cliente</h2>
+            <h2 className="mb-4 text-2xl font-bold">Ficha del Cliente</h2>
 
             {/* Datos generales */}
             <InfoCliente cliente={cliente} creditos={cliente.creditos} />
@@ -217,7 +345,7 @@ const ClienteDetalle = () => {
                             <CreditItem
                                 c={c}
                                 onEdit={onEdit}
-                                onDelete={onDelete}
+                                onDelete={onDelete}   // handler centralizado con control por estado
                                 onView={onView}
                             />
                             {abiertoId === c.id && <CreditoDetalleInline credito={c} />}
@@ -232,3 +360,4 @@ const ClienteDetalle = () => {
 };
 
 export default ClienteDetalle;
+

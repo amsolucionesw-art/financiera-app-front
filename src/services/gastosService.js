@@ -34,6 +34,9 @@ const toYMD = (v) => {
 /**
  * Soporta: "1.234,56" · "1,234.56" · "1234,56" · "1234.56" · "-1.234,56" · "1 234,56"
  * Regla: el ÚLTIMO '.' o ',' es el separador decimal; el resto son miles.
+ *
+ * ⚠️ Ya NO lo usamos para enviar el total al backend, para evitar doble normalización.
+ * Lo dejamos por si más adelante se necesita en algún cálculo de front.
  */
 const sanitizeNumber = (value) => {
     if (value === null || value === undefined) return 0;
@@ -70,8 +73,20 @@ const normalizePayload = (data = {}) => {
         if (k in out) out[k] = toYMD(out[k]);
     });
 
-    // Numéricos
-    if ('total' in out) out.total = sanitizeNumber(out.total);
+    // ⛔️ IMPORTANTE:
+    // Ya NO sanitizamos el total en el front.
+    // Dejamos que el backend (gastos.service.js) haga TODA la normalización numérica
+    // con su propia lógica unificada (toNumber + fix2).
+    if ('total' in out) {
+        const val = out.total;
+        if (typeof val === 'number') {
+            // Si ya viene como número, lo dejamos tal cual.
+            out.total = val;
+        } else {
+            // Si viene como string u otro tipo, lo mandamos como string trimmeado.
+            out.total = String(val ?? '').trim();
+        }
+    }
 
     // forma de pago → número o null
     if ('forma_pago_id' in out) out.forma_pago_id = normalizeFormaPagoId(out.forma_pago_id);

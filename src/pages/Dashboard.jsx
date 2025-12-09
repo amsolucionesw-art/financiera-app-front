@@ -105,13 +105,24 @@ const Dashboard = () => {
     const path = location.pathname || '';
     setGroupsOpen((prev) => {
       const next = { ...prev };
-      if (path.startsWith('/ventas') || path.startsWith('/compras') || path.startsWith('/gastos') || path.startsWith('/proveedores')) {
+      if (
+        path.startsWith('/ventas') ||
+        path.startsWith('/compras') ||
+        path.startsWith('/gastos') ||
+        path.startsWith('/proveedores')
+      ) {
         next.operaciones = true;
       }
       if (path.startsWith('/caja/')) {
         next.caja = true;
       }
-      if (path.startsWith('/usuarios') || path.startsWith('/clientes') || path.startsWith('/informes') || path.startsWith('/presupuestos') || path.startsWith('/tareas-pendientes')) {
+      if (
+        path.startsWith('/usuarios') ||
+        path.startsWith('/clientes') ||
+        path.startsWith('/informes') ||
+        path.startsWith('/presupuestos') ||
+        path.startsWith('/tareas-pendientes')
+      ) {
         next.reportes = true;
       }
       return next;
@@ -217,7 +228,7 @@ const Dashboard = () => {
             </div>
           </div>
 
-          {/* Navegación (scrollable) */}
+          {/* Navegación + Cerrar sesión abajo de Cotizador */}
           <nav className="flex-1 overflow-y-auto pr-1">
             <div className="flex flex-col gap-3">
               <NavItem to="/" end>
@@ -271,14 +282,21 @@ const Dashboard = () => {
                           <Wallet size={18} />
                           Diaria
                         </NavItem>
-                        <NavItem to="/caja/mensual">
-                          <Calendar size={18} />
-                          Mensual
-                        </NavItem>
-                        <NavItem to="/caja/historial">
-                          <History size={18} />
-                          Historial
-                        </NavItem>
+
+                        {/* Mensual solo para superadmin */}
+                        {isSuperadmin && (
+                          <NavItem to="/caja/mensual">
+                            <Calendar size={18} />
+                            Mensual
+                          </NavItem>
+                        )}
+
+                        {isSuperadmin && (
+                          <NavItem to="/caja/historial">
+                            <History size={18} />
+                            Historial
+                          </NavItem>
+                        )}
                       </div>
                     )}
                   </div>
@@ -308,19 +326,21 @@ const Dashboard = () => {
                           <NotebookText size={18} />
                           Presupuestos
                         </NavItem>
-                        <NavItem to="/tareas-pendientes">
-                          <div className="relative flex items-center gap-2">
-                            <NotebookText size={18} />
-                            Tareas pendientes
-                            {hayTareasPendientes && (
-                              <span
-                                className="ml-1 inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 ring-2 ring-sky-700"
-                                aria-label="Tareas pendientes"
-                                title="Tareas pendientes"
-                              />
-                            )}
-                          </div>
-                        </NavItem>
+                        {isSuperadmin && (
+                          <NavItem to="/tareas-pendientes">
+                            <div className="relative flex items-center gap-2">
+                              <NotebookText size={18} />
+                              Tareas pendientes
+                              {hayTareasPendientes && (
+                                <span
+                                  className="ml-1 inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 ring-2 ring-sky-700"
+                                  aria-label="Tareas pendientes"
+                                  title="Tareas pendientes"
+                                />
+                              )}
+                            </div>
+                          </NavItem>
+                        )}
                       </div>
                     )}
                   </div>
@@ -340,16 +360,16 @@ const Dashboard = () => {
                 <Calculator size={18} />
                 Cotizador
               </NavItem>
+
+              {/* Cerrar sesión justo debajo de Cotizador */}
+              <button
+                className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-medium text-red-100 transition hover:bg-red-500/20 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                onClick={handleLogout}
+              >
+                <LogOut size={18} /> Cerrar sesión
+              </button>
             </div>
           </nav>
-
-          {/* Logout */}
-          <button
-            className="mt-4 inline-flex items-center gap-2 rounded-md px-2 py-1 text-red-100 transition hover:bg-red-500/20 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
-            onClick={handleLogout}
-          >
-            <LogOut size={18} /> Cerrar sesión
-          </button>
         </div>
       </aside>
 

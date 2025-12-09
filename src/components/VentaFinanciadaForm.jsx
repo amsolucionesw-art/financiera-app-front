@@ -69,13 +69,13 @@ export default function VentaFinanciadaForm({
         interes: '',
         cuotas: 2,
         tipo_credito: 'mensual',
+        detalle_producto: '',
         neto: '',
         iva: '',
         ret_gan: '',
         ret_iva: '',
         ret_iibb_tuc: '',
         total: '',
-        forma_pago_id: '',
         vendedor: '',
         bonificacion: false,
         observacion: '',
@@ -224,13 +224,13 @@ export default function VentaFinanciadaForm({
             interes: fix2(form.interes),
             cuotas: Number(form.cuotas),
             tipo_credito: form.tipo_credito,
+            detalle_producto: form.detalle_producto?.trim() || null,
             neto: fix2(form.neto || 0),
             iva: fix2(form.iva || 0),
             ret_gan: fix2(form.ret_gan || 0),
             ret_iva: fix2(form.ret_iva || 0),
             ret_iibb_tuc: fix2(form.ret_iibb_tuc || 0),
             total: fix2(form.total),
-            forma_pago_id: form.forma_pago_id === '' ? null : Number(form.forma_pago_id),
             vendedor: form.vendedor?.trim() || null,
             bonificacion: !!form.bonificacion,
             observacion: form.observacion?.trim() || null,
@@ -390,7 +390,9 @@ export default function VentaFinanciadaForm({
                     <legend className="px-1 text-sm font-medium text-gray-700">Financiación (Crédito)</legend>
                     <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
                         <div>
-                            <label className="block text-xs font-medium text-gray-700">Cuotas <span className="text-red-500">*</span></label>
+                            <label className="block text-xs font-medium text-gray-700">
+                                Cuotas <span className="text-red-500">*</span>
+                            </label>
                             <input
                                 type="number"
                                 min={2}
@@ -403,7 +405,9 @@ export default function VentaFinanciadaForm({
                             />
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-gray-700">Tipo de crédito <span className="text-red-500">*</span></label>
+                            <label className="block text-xs font-medium text-gray-700">
+                                Tipo de crédito <span className="text-red-500">*</span>
+                            </label>
                             <select
                                 name="tipo_credito"
                                 value={form.tipo_credito}
@@ -417,7 +421,9 @@ export default function VentaFinanciadaForm({
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-gray-700">Capital <span className="text-red-500">*</span></label>
+                            <label className="block text-xs font-medium text-gray-700">
+                                Capital <span className="text-red-500">*</span>
+                            </label>
                             <input
                                 name="capital"
                                 value={form.capital}
@@ -428,7 +434,9 @@ export default function VentaFinanciadaForm({
                             />
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-gray-700">Interés (%) <span className="text-red-500">*</span></label>
+                            <label className="block text-xs font-medium text-gray-700">
+                                Interés (%) <span className="text-red-500">*</span>
+                            </label>
                             <input
                                 name="interes"
                                 value={form.interes}
@@ -437,6 +445,25 @@ export default function VentaFinanciadaForm({
                                 required
                                 className={INPUT_CLS}
                             />
+                            <p className="mt-1 text-[11px] text-gray-500">
+                                Recordá que el interés se ingresa de forma manual para esta venta financiada;
+                                el sistema no calcula este porcentaje automáticamente.
+                            </p>
+                        </div>
+                        <div className="md:col-span-5">
+                            <label className="block text-xs font-medium text-gray-700">
+                                Detalle del producto vendido
+                            </label>
+                            <input
+                                name="detalle_producto"
+                                value={form.detalle_producto}
+                                onChange={onChange}
+                                placeholder="Ej: Celular Motorola G86"
+                                className={INPUT_CLS}
+                            />
+                            <p className="mt-1 text-[11px] text-gray-500">
+                                Este detalle se usará luego para mostrar el producto en la ficha del crédito asociado.
+                            </p>
                         </div>
                     </div>
                 </fieldset>
@@ -466,22 +493,14 @@ export default function VentaFinanciadaForm({
                             <input name="ret_iibb_tuc" value={form.ret_iibb_tuc} onChange={onChange} className={INPUT_CLS} />
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-gray-700">Total <span className="text-red-500">*</span></label>
+                            <label className="block text-xs font-medium text-gray-700">
+                                Total <span className="text-red-500">*</span>
+                            </label>
                             <input
                                 name="total"
                                 value={form.total}
                                 onChange={onChange}
                                 required
-                                className={INPUT_CLS}
-                            />
-                        </div>
-                        <div className="md:col-span-2">
-                            <label className="block text-xs font-medium text-gray-700">Forma de pago</label>
-                            <input
-                                name="forma_pago_id"
-                                value={form.forma_pago_id}
-                                onChange={onChange}
-                                placeholder="ID numérico o vacío"
                                 className={INPUT_CLS}
                             />
                         </div>

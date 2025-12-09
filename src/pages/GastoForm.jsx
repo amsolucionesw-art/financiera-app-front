@@ -21,9 +21,9 @@ import {
 // Usamos el mismo origen de formas de pago que en otras pantallas
 import { obtenerFormasDePago } from '../services/cuotaService';
 
-// ➕ NUEVO: service de proveedores
+// Service de proveedores
 import {
-    listarProveedores,
+    buscarProveedores,
     crearProveedor as apiCrearProveedor,
 } from '../services/proveedorService';
 
@@ -124,8 +124,8 @@ export default function GastoForm() {
     const fetchProveedores = useCallback(async () => {
         setProvLoading(true);
         try {
-            const list = await listarProveedores({
-                search: provSearch,
+            // Usamos buscarProveedores que ya devuelve el array (res.data)
+            const list = await buscarProveedores(provSearch || '', {
                 limit: 200,
                 orderBy: 'nombre_razon_social',
                 orderDir: 'ASC',
@@ -228,7 +228,7 @@ export default function GastoForm() {
             proveedor_cuit: form.proveedor_cuit || undefined,
 
             concepto: form.concepto?.trim(),
-            total: toNumber(form.total),
+            total: form.total,
 
             forma_pago_id:
                 form.forma_pago_id === '' ? undefined

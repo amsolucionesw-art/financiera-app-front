@@ -81,8 +81,15 @@ const normalizeFormaPagoId = (v) => {
 // ✅ Tipo de crédito permitido (para que el back genere el crédito correcto)
 const normalizeTipoCredito = (v) => {
     const s = String(v ?? '').trim().toLowerCase();
-    if (s === 'semanal' || s === 'quincenal' || s === 'mensual') return s;
-    return 'mensual'; // default si no lo envían
+    if (!s) return undefined; // dejamos que el back aplique su default ('mensual')
+
+    // Hacemos el parser más tolerante a variantes de texto
+    if (s === 'semanal' || s === 'semanales' || s.startsWith('sem')) return 'semanal';
+    if (s === 'quincenal' || s === 'quincenales' || s.startsWith('quin')) return 'quincenal';
+    if (s === 'mensual' || s === 'mensuales' || s.startsWith('men')) return 'mensual';
+
+    // Si viene algo raro, caemos a mensual como comportamiento por defecto
+    return 'mensual';
 };
 
 // Normaliza payload de create/update
@@ -108,10 +115,15 @@ const normalizePayload = (data = {}) => {
     if ('forma_pago_id' in out) out.forma_pago_id = normalizeFormaPagoId(out.forma_pago_id);
 
     // Tipo de crédito (para ventas financiadas → creación de crédito)
-    if ('tipo_credito' in out) out.tipo_credito = normalizeTipoCredito(out.tipo_credito);
-    // Si no vino y la UI no lo maneja, el back asumirá 'mensual' por defecto.
-    // (Lo dejamos explícito si querés:)
-    // else out.tipo_credito = 'mensual';
+    if ('tipo_credito' in out) {
+        const normalizado = normalizeTipoCredito(out.tipo_credito);
+        if (normalizado !== undefined) {
+            out.tipo_credito = normalizado;
+        } else {
+            // si no vino nada, dejamos que el backend aplique su default
+            delete out.tipo_credito;
+        }
+    }
 
     // Trims comunes
     ['numero_comprobante', 'cliente_nombre', 'doc_cliente', 'vendedor', 'observacion'].forEach((k) => {

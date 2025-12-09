@@ -9,6 +9,7 @@ import {
     buildComprasExportRows,
 } from '../services/comprasService';
 import { listarProveedores } from '../services/proveedorService';
+import { obtenerFormasDePago } from '../services/cuotaService';
 import { exportToCSV, exportContableXLSX } from '../utils/exporters';
 import {
     RefreshCw,
@@ -29,7 +30,7 @@ const toYMD = (d) => {
     if (Number.isNaN(dt.getTime())) return '';
     const yyyy = dt.getFullYear();
     const mm = String(dt.getMonth() + 1).padStart(2, '0');
-    const dd = String(dt.getDate()).padStart(2, '0');
+    const dd = String(dt.getDate() + 0).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
 };
 const today = toYMD(new Date());
@@ -71,6 +72,19 @@ export default function Compras() {
     const [provLoading, setProvLoading] = useState(false);
     const [provError, setProvError] = useState('');
 
+    // Formas de pago (catálogo para mostrar nombre en tabla)
+    const [formasPago, setFormasPago] = useState([]);
+
+    const formaPagoMap = useMemo(() => {
+        const map = {};
+        (formasPago || []).forEach((fp) => {
+            if (fp && fp.id != null) {
+                map[fp.id] = fp.nombre;
+            }
+        });
+        return map;
+    }, [formasPago]);
+
     const persistFiltersToUrl = (params) => {
         const sp = new URLSearchParams();
         Object.entries(params).forEach(([k, v]) => {
@@ -84,14 +98,31 @@ export default function Compras() {
         setProvLoading(true);
         setProvError('');
         try {
-            const list = await listarProveedores({ limit: 300 });
-            setProveedores(Array.isArray(list) ? list : []);
+            const res = await listarProveedores({
+                limit: 300,
+                orderBy: 'nombre_razon_social',
+                orderDir: 'ASC',
+            });
+            const arr = Array.isArray(res) ? res : res?.data ?? res?.rows ?? [];
+            setProveedores(Array.isArray(arr) ? arr : []);
         } catch (e) {
             setProvError(e?.message || 'No se pudieron cargar proveedores');
             setProveedores([]);
         } finally {
             setProvLoading(false);
         }
+    }, []);
+
+    /* ─────────── Formas de pago ─────────── */
+    useEffect(() => {
+        (async () => {
+            try {
+                const fps = await obtenerFormasDePago();
+                setFormasPago(Array.isArray(fps) ? fps : []);
+            } catch {
+                setFormasPago([]);
+            }
+        })();
     }, []);
 
     useEffect(() => {
@@ -217,7 +248,10 @@ export default function Compras() {
             AÑO: r.anio ?? '',
             'FACTURADO A': r.facturado_a || '',
             'GASTO REALIZADO POR': r.gasto_realizado_por || '',
-            'FORMA DE PAGO': r.formaPago?.nombre ?? r.forma_pago_nombre ?? r.forma_pago_id ?? '',
+            'FORMA DE PAGO':
+                r.formaPago?.nombre ??
+                r.forma_pago_nombre ??
+                (r.forma_pago_id != null ? (formaPagoMap[r.forma_pago_id] || '') : ''),
             'CajaMovID': r.caja_movimiento_id ?? '',
         }));
 
@@ -356,7 +390,7 @@ export default function Compras() {
             {/* Tabla con scroll horizontal y header sticky */}
             <div className="rounded-lg border border-gray-200 bg-white">
                 <div className="overflow-x-auto">
-                    <table className="min-w-[1100px] text-sm">
+                    <table className="min-w-[1150px] text-sm">
                         <thead className="sticky top-0 z-10 bg-gray-50 text-gray-700">
                             <tr>
                                 <Th>Fecha imputación</Th>
@@ -365,6 +399,7 @@ export default function Compras() {
                                 <Th className="text-right">Neto</Th>
                                 <Th className="text-right">IVA</Th>
                                 <Th className="text-right">Total</Th>
+                                <Th>Forma de pago</Th>
                                 <Th>Clasif.</Th>
                                 <Th className="w-40 text-right">Acciones</Th>
                             </tr>
@@ -373,7 +408,7 @@ export default function Compras() {
                         <tbody>
                             {!loading && rows.length === 0 && (
                                 <tr>
-                                    <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                                         <div className="flex flex-col items-center gap-2">
                                             <span>Sin resultados para los filtros aplicados.</span>
                                             <div className="flex gap-2">
@@ -398,7 +433,7 @@ export default function Compras() {
 
                             {loading && (
                                 <tr>
-                                    <td colSpan={8} className="px-3 py-8 text-center text-gray-500">
+                                    <td colSpan={9} className="px-3 py-8 text-center text-gray-500">
                                         <div className="inline-flex items-center gap-2">
                                             <Loader2 className="h-4 w-4 animate-spin" />
                                             Cargando…
@@ -421,6 +456,15 @@ export default function Compras() {
                                     <Td className="text-right">{fmtNum(r.neto)}</Td>
                                     <Td className="text-right">{fmtNum(r.iva)}</Td>
                                     <Td className="text-right font-medium">{fmtNum(r.total)}</Td>
+                                    <Td>
+                                        {
+                                            r.formaPago?.nombre ||
+                                            r.forma_pago_nombre ||
+                                            (r.forma_pago_id != null
+                                                ? (formaPagoMap[r.forma_pago_id] || 'Sin especificar')
+                                                : 'Sin especificar')
+                                        }
+                                    </Td>
                                     <Td>{r.clasificacion || '-'}</Td>
                                     <Td>
                                         <div className="flex justify-end gap-2">
@@ -449,7 +493,7 @@ export default function Compras() {
                                         Total
                                     </td>
                                     <td className="px-3 py-2 text-right font-semibold">{fmtNum(total)}</td>
-                                    <td colSpan={2}></td>
+                                    <td colSpan={3}></td>
                                 </tr>
                             </tfoot>
                         )}

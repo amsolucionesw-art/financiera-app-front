@@ -4,6 +4,7 @@ import Swal from 'sweetalert2';
 import { TIPOS_CAJA, crearMovimiento, obtenerMovimientos, obtenerResumenDiario } from '../services/cajaService';
 import { obtenerFormasDePago } from '../services/cuotaService';
 import { exportToCSV } from '../utils/exporters';
+import { jwtDecode } from 'jwt-decode';
 
 // Helpers
 const todayYMD = () => {
@@ -191,6 +192,10 @@ const Diaria = () => {
     const [movs, setMovs] = useState([]);
     const [loading, setLoading] = useState(false);
 
+    /* Paginación para movimientos */
+    const [currentPage, setCurrentPage] = useState(1);
+    const rowsPerPage = 10;
+
     /* Alta rápida */
     const [nuevo, setNuevo] = useState({
         tipo: 'ingreso',
@@ -219,6 +224,9 @@ const Diaria = () => {
         totalGeneral: 0,
         exportFileName: 'detalle.csv',
     });
+
+    /* Rol del usuario */
+    const [esSuperadmin, setEsSuperadmin] = useState(false);
 
     const fetchFormas = useCallback(async () => {
         try {
@@ -257,6 +265,7 @@ const Diaria = () => {
 
             const data = await obtenerMovimientos(params);
             setMovs(Array.isArray(data) ? data : []);
+            setCurrentPage(1); // reset paginación al recargar
         } catch (err) {
             console.error('Error listando movimientos', err);
             Swal.fire('Error', err.message || 'No se pudieron cargar movimientos', 'error');
@@ -264,6 +273,26 @@ const Diaria = () => {
             setLoading(false);
         }
     }, [fecha, filtroTipos, formaPagoId, categorias, refId, q]);
+
+    /* Cargar rol desde el token */
+    useEffect(() => {
+        try {
+            const token = localStorage.getItem('token');
+            if (!token) return;
+            const decoded = jwtDecode(token);
+            const rol =
+                (decoded.rol ||
+                    decoded.role ||
+                    decoded.tipo ||
+                    decoded.tipo_usuario ||
+                    decoded.userRole ||
+                    '').toLowerCase();
+            setEsSuperadmin(rol === 'superadmin');
+        } catch (err) {
+            console.error('Error decodificando token JWT', err);
+            setEsSuperadmin(false);
+        }
+    }, []);
 
     useEffect(() => {
         fetchFormas();
@@ -273,6 +302,11 @@ const Diaria = () => {
         cargarResumen();
         cargarMovimientos();
     }, [cargarResumen, cargarMovimientos]);
+
+    // Reset página cuando cambian filtros manualmente
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [fecha, filtroTipos, formaPagoId, categorias, refId, q]);
 
     const totales = useMemo(() => resumen?.totales || null, [resumen]);
 
@@ -319,9 +353,42 @@ const Diaria = () => {
         return build;
     }, [resumen]);
 
+    /* Paginación de movimientos */
+    const totalPages = useMemo(() => {
+        if (!movs || movs.length === 0) return 1;
+        return Math.ceil(movs.length / rowsPerPage);
+    }, [movs]);
+
+    const paginatedMovs = useMemo(() => {
+        if (!movs || movs.length === 0) return [];
+        const start = (currentPage - 1) * rowsPerPage;
+        return movs.slice(start, start + rowsPerPage);
+    }, [movs, currentPage]);
+
+    useEffect(() => {
+        if (currentPage > totalPages) {
+            setCurrentPage(totalPages);
+        }
+    }, [totalPages, currentPage]);
+
+    const startIndex =
+        movs && movs.length > 0 ? (currentPage - 1) * rowsPerPage + 1 : 0;
+    const endIndex =
+        movs && movs.length > 0 ? Math.min(currentPage * rowsPerPage, movs.length) : 0;
+
     /* Acciones */
     const onCrearMovimiento = async (e) => {
         e.preventDefault();
+
+        if (!esSuperadmin) {
+            Swal.fire(
+                'Permiso denegado',
+                'Solo el usuario superadmin puede registrar movimientos manuales en Caja.',
+                'warning'
+            );
+            return;
+        }
+
         try {
             const payload = {
                 tipo: String(nuevo.tipo || '').toLowerCase(),
@@ -359,6 +426,10 @@ const Diaria = () => {
             categoria: referenciaTipoLabel(m.referencia_tipo),
             referencia_id: m.referencia_tipo ? (m.referencia_id ?? '') : '',
             monto: Number(m.monto || 0).toFixed(2).replace('.', ','),
+            usuario:
+                m.usuario?.nombre_completo ||
+                m.usuario?.nombre_usuario ||
+                (m.usuario_id ? `#${m.usuario_id}` : ''),
         }));
         exportToCSV(`caja-diaria-${fecha}.csv`, rows, [
             'fecha',
@@ -369,6 +440,7 @@ const Diaria = () => {
             'categoria',
             'referencia_id',
             'monto',
+            'usuario',
         ]);
     };
 
@@ -566,12 +638,6 @@ const Diaria = () => {
                 >
                     Exportar CSV
                 </button>
-                <button
-                    onClick={imprimir}
-                    className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                    Imprimir
-                </button>
             </div>
 
             {/* Tabla */}
@@ -585,6 +651,7 @@ const Diaria = () => {
                                 <th className="px-4 py-2">Tipo</th>
                                 <th className="px-4 py-2">Concepto</th>
                                 <th className="px-4 py-2">Forma de pago</th>
+                                <th className="px-4 py-2">Usuario</th>
                                 <th className="px-4 py-2">Categoría</th>
                                 <th className="px-4 py-2">Referencia</th>
                                 <th className="px-4 py-2 text-right">Monto</th>
@@ -593,18 +660,18 @@ const Diaria = () => {
                         <tbody>
                             {loading ? (
                                 <tr>
-                                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
                                         Cargando movimientos...
                                     </td>
                                 </tr>
                             ) : (movs || []).length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
                                         No hay movimientos para la fecha seleccionada con los filtros aplicados.
                                     </td>
                                 </tr>
                             ) : (
-                                movs.map((m) => (
+                                paginatedMovs.map((m) => (
                                     <tr key={m.id} className="border-t border-slate-100">
                                         <td className="px-4 py-2">{m.fecha}</td>
                                         <td className="px-4 py-2">{m.hora}</td>
@@ -618,6 +685,11 @@ const Diaria = () => {
                                             {m.formaPago?.nombre ||
                                                 (m.forma_pago_id == null ? 'Sin especificar' : `#${m.forma_pago_id}`)}
                                         </td>
+                                        <td className="px-4 py-2">
+                                            {m.usuario?.nombre_completo ||
+                                                m.usuario?.nombre_usuario ||
+                                                (m.usuario_id ? `#${m.usuario_id}` : '—')}
+                                        </td>
                                         <td className="px-4 py-2">{referenciaTipoLabel(m.referencia_tipo)}</td>
                                         <td className="px-4 py-2">
                                             {m.referencia_tipo ? `${m.referencia_id ?? ''}` : '—'}
@@ -629,103 +701,135 @@ const Diaria = () => {
                         </tbody>
                     </table>
                 </div>
+
+                {/* Controles de paginación */}
+                {!loading && movs && movs.length > 0 && (
+                    <div className="flex flex-col gap-2 border-t border-slate-100 bg-slate-50 px-4 py-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            Mostrando {startIndex}–{endIndex} de {movs.length} movimientos
+                        </div>
+                        <div className="flex items-center gap-2 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                                disabled={currentPage === 1}
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                            >
+                                Anterior
+                            </button>
+                            <span className="text-xs">
+                                Página {currentPage} de {totalPages}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                                disabled={currentPage === totalPages || movs.length === 0}
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                            >
+                                Siguiente
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
-            {/* Alta rápida */}
-            <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4">
-                <h2 className="mb-3 text-base font-semibold">Registrar movimiento</h2>
-                <form onSubmit={onCrearMovimiento} className="grid grid-cols-1 gap-3 sm:grid-cols-6">
-                    <div>
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Tipo</label>
-                        <select
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            value={nuevo.tipo}
-                            onChange={(e) => setNuevo((s) => ({ ...s, tipo: e.target.value }))}
-                            required
-                        >
-                            {TIPOS_CAJA.map((t) => (
-                                <option key={t} value={t}>
-                                    {tipoLabel(t)}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
+            {/* Alta rápida: SOLO SUPERADMIN */}
+            {esSuperadmin && (
+                <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4">
+                    <h2 className="mb-3 text-base font-semibold">Registrar movimiento</h2>
+                    <form onSubmit={onCrearMovimiento} className="grid grid-cols-1 gap-3 sm:grid-cols-6">
+                        <div>
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Tipo</label>
+                            <select
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                value={nuevo.tipo}
+                                onChange={(e) => setNuevo((s) => ({ ...s, tipo: e.target.value }))}
+                                required
+                            >
+                                {TIPOS_CAJA.map((t) => (
+                                    <option key={t} value={t}>
+                                        {tipoLabel(t)}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
 
-                    <div>
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Monto</label>
-                        <input
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            placeholder="0,00"
-                            value={nuevo.monto}
-                            onChange={(e) => setNuevo((s) => ({ ...s, monto: e.target.value }))}
-                            required
-                        />
-                    </div>
+                        <div>
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Monto</label>
+                            <input
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                placeholder="0,00"
+                                value={nuevo.monto}
+                                onChange={(e) => setNuevo((s) => ({ ...s, monto: e.target.value }))}
+                                required
+                            />
+                        </div>
 
-                    <div>
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Forma de pago</label>
-                        <select
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            value={nuevo.forma_pago_id}
-                            onChange={(e) => setNuevo((s) => ({ ...s, forma_pago_id: e.target.value }))}
-                        >
-                            <option value="">(Seleccionar)</option>
-                            <option value="null">Sin especificar</option>
-                            {formas.map((f) => (
-                                <option key={f.id} value={String(f.id)}>
-                                    {f.nombre}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
+                        <div>
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Forma de pago</label>
+                            <select
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                value={nuevo.forma_pago_id}
+                                onChange={(e) => setNuevo((s) => ({ ...s, forma_pago_id: e.target.value }))}
+                            >
+                                <option value="">(Seleccionar)</option>
+                                <option value="null">Sin especificar</option>
+                                {formas.map((f) => (
+                                    <option key={f.id} value={String(f.id)}>
+                                        {f.nombre}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
 
-                    <div>
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Categoría</label>
-                        <select
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            value={nuevo.referencia_tipo}
-                            onChange={(e) => setNuevo((s) => ({ ...s, referencia_tipo: e.target.value }))}
-                        >
-                            {CATEGORIAS_ALTA.map((c) => (
-                                <option key={c.value} value={c.value}>
-                                    {c.label}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
+                        <div>
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Categoría</label>
+                            <select
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                value={nuevo.referencia_tipo}
+                                onChange={(e) => setNuevo((s) => ({ ...s, referencia_tipo: e.target.value }))}
+                            >
+                                {CATEGORIAS_ALTA.map((c) => (
+                                    <option key={c.value} value={c.value}>
+                                        {c.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
 
-                    <div>
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Ref. ID (opcional)</label>
-                        <input
-                            type="number"
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            placeholder="Numérico (p.ej. ID de crédito/recibo)"
-                            value={nuevo.referencia_id}
-                            onChange={(e) => setNuevo((s) => ({ ...s, referencia_id: e.target.value }))}
-                        />
-                    </div>
+                        <div>
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Ref. ID (opcional)</label>
+                            <input
+                                type="number"
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                placeholder="Numérico (p.ej. ID de crédito/recibo)"
+                                value={nuevo.referencia_id}
+                                onChange={(e) => setNuevo((s) => ({ ...s, referencia_id: e.target.value }))}
+                            />
+                        </div>
 
-                    <div className="sm:col-span-6">
-                        <label className="mb-1 block text-xs font-semibold text-slate-600">Concepto</label>
-                        <input
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            placeholder="Ej: Venta mostrador, Compra insumos, Ajuste, Apertura..."
-                            value={nuevo.concepto}
-                            onChange={(e) => setNuevo((s) => ({ ...s, concepto: e.target.value }))}
-                            required
-                        />
-                    </div>
+                        <div className="sm:col-span-6">
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">Concepto</label>
+                            <input
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                placeholder="Ej: Venta mostrador, Compra insumos, Ajuste, Apertura..."
+                                value={nuevo.concepto}
+                                onChange={(e) => setNuevo((s) => ({ ...s, concepto: e.target.value }))}
+                                required
+                            />
+                        </div>
 
-                    <div className="sm:col-span-6">
-                        <button
-                            type="submit"
-                            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
-                        >
-                            Guardar movimiento
-                        </button>
-                    </div>
-                </form>
-            </div>
+                        <div className="sm:col-span-6">
+                            <button
+                                type="submit"
+                                className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                            >
+                                Guardar movimiento
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            )}
 
             {/* Modal de detalle */}
             <DetalleIndicadorModal
@@ -742,3 +846,4 @@ const Diaria = () => {
 };
 
 export default Diaria;
+
