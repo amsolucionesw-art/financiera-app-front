@@ -11,10 +11,13 @@ import { obtenerCuotasVencidas } from '../services/cuotaService';
    ───────────────────────────── */
 const PATHS = {
     crearCredito: '/creditos/nuevo',
-    // ANTES: '/informes?tipo=cuotas&estadoCuota=vencida'
     verVencidas: '/cuotas/vencidas',
-    rutaCobrador: '/clientes/por-cobrador',
-    cuotasACobrar: '/creditos'
+
+    // ✅ NUEVO: ruta real para cobrador
+    rutaCobrador: '/cuotas/ruta-cobro',
+
+    // ✅ El cobrador NO ve /creditos, lo mandamos a su listado
+    cuotasACobrar: '/clientes/por-cobrador',
 };
 
 const getRolIdFromToken = () => {
@@ -73,7 +76,6 @@ const Welcome = () => {
             try {
                 setLoading(true);
                 setError('');
-                // ✅ Ahora usamos el endpoint dedicado de cuotas vencidas
                 const data = await obtenerCuotasVencidas();
                 const arr = Array.isArray(data) ? data : (data?.data ?? []);
                 if (alive) setOverdueCount(arr.length || 0);
@@ -149,9 +151,9 @@ const Welcome = () => {
                                 to={PATHS.cuotasACobrar}
                                 onClick={() => rememberRedirect(PATHS.cuotasACobrar)}
                                 className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-                                aria-label="Ver mis créditos/cuotas a cobrar"
+                                aria-label="Ver mis clientes"
                             >
-                                <FileText size={16} /> Cuotas a cobrar
+                                <FileText size={16} /> Mis clientes
                             </Link>
                         </>
                     )}
@@ -173,19 +175,17 @@ const Welcome = () => {
                     ) : overdueCount > 0 ? (
                         <button
                             onClick={() => {
-                                // ahora redirige a la tabla dedicada
                                 rememberRedirect(PATHS.verVencidas);
                                 navigate(PATHS.verVencidas);
                             }}
                             className="mb-4 w-full rounded-md bg-red-50 p-4 text-left ring-1 ring-red-200 transition hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
-                            aria-label={`Ver ${overdueCount} ${
-                                overdueCount === 1 ? 'cuota vencida' : 'cuotas vencidas'
-                            }`}
+                            aria-label={`Ver ${overdueCount} ${overdueCount === 1 ? 'cuota vencida' : 'cuotas vencidas'
+                                }`}
                         >
                             <p className="flex items-center gap-2 text-sm font-medium text-red-800">
                                 <AlertTriangle size={18} className="shrink-0" />
-                                ¡Atención! Hay {overdueCount}{' '}
-                                {overdueCount === 1 ? 'cuota vencida' : 'cuotas vencidas'} — Click para ver
+                                ¡Atención! Hay {overdueCount} {overdueCount === 1 ? 'cuota vencida' : 'cuotas vencidas'} — Click
+                                para ver
                             </p>
                         </button>
                     ) : null}
@@ -204,3 +204,4 @@ const Welcome = () => {
 };
 
 export default Welcome;
+

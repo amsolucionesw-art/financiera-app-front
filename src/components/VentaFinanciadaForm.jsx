@@ -3,13 +3,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { obtenerClientesBasico, obtenerClientePorId } from '../services/clienteService';
 import ventasService from '../services/ventasService';
 
+// YYYY-MM-DD en horario local (alineado con backend y sin UTC)
 const asYMD = (v) => {
     if (!v) return '';
     const d = v instanceof Date ? v : new Date(v);
     if (Number.isNaN(d.getTime())) return '';
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
 };
 
@@ -42,6 +43,19 @@ const TIPOS = [
 const INPUT_CLS =
     'mt-1 w-full rounded-md border border-gray-400 px-3 py-2 bg-white placeholder-gray-400 ' +
     'focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500';
+
+// Calcula TOTAL desde los impuestos (neto + IVA + retenciones)
+const calcularTotalDesdeImpuestos = (values) => {
+    const neto = toNumber(values.neto);
+    const iva = toNumber(values.iva);
+    const ret_gan = toNumber(values.ret_gan);
+    const ret_iva = toNumber(values.ret_iva);
+    const ret_iibb_tuc = toNumber(values.ret_iibb_tuc);
+
+    const totalNum = neto + iva + ret_gan + ret_iva + ret_iibb_tuc;
+    if (!totalNum) return '';
+    return totalNum.toFixed(2).replace('.', ',');
+};
 
 export default function VentaFinanciadaForm({
     onCreated,
@@ -77,7 +91,6 @@ export default function VentaFinanciadaForm({
         ret_iibb_tuc: '',
         total: '',
         vendedor: '',
-        bonificacion: false,
         observacion: '',
     });
 
@@ -122,7 +135,6 @@ export default function VentaFinanciadaForm({
                 }));
                 setClientes(list);
 
-                // Mantener foco, pero NO abrir el dropdown automáticamente
                 if (searchInputRef.current) {
                     const el = searchInputRef.current;
                     const pos = el.selectionStart ?? el.value.length;
@@ -141,10 +153,19 @@ export default function VentaFinanciadaForm({
 
     const onChange = (e) => {
         const { name, value, type, checked } = e.target;
-        setForm((s) => ({
-            ...s,
-            [name]: type === 'checkbox' ? !!checked : value,
-        }));
+        setForm((s) => {
+            const next = {
+                ...s,
+                [name]: type === 'checkbox' ? !!checked : value,
+            };
+
+            // Si se modifica algún impuesto → recalcular total automático
+            if (['neto', 'iva', 'ret_gan', 'ret_iva', 'ret_iibb_tuc'].includes(name)) {
+                next.total = calcularTotalDesdeImpuestos(next);
+            }
+
+            return next;
+        });
     };
 
     const selectedCliente = useMemo(
@@ -152,7 +173,7 @@ export default function VentaFinanciadaForm({
         [clientes, form.cliente_id]
     );
 
-    // Autocompletar cliente
+    // Autocompletar cliente (nombre + DNI) al cambiar cliente_id
     useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -203,7 +224,7 @@ export default function VentaFinanciadaForm({
         const interes = toNumber(form.interes);
         if (!(interes > 0)) return 'El interés (%) es obligatorio y debe ser mayor a 0';
         const total = toNumber(form.total);
-        if (!(total > 0)) return 'El total debe ser mayor a 0';
+        if (!(total > 0)) return 'El total debe ser mayor a 0 (se calcula desde el desglose impositivo)';
         return null;
     };
 
@@ -232,7 +253,6 @@ export default function VentaFinanciadaForm({
             ret_iibb_tuc: fix2(form.ret_iibb_tuc || 0),
             total: fix2(form.total),
             vendedor: form.vendedor?.trim() || null,
-            bonificacion: !!form.bonificacion,
             observacion: form.observacion?.trim() || null,
         };
 
@@ -249,9 +269,16 @@ export default function VentaFinanciadaForm({
         }
     };
 
+    // Selección de cliente desde el dropdown
     const pickCliente = (c) => {
-        setForm((s) => ({ ...s, cliente_id: c.id }));
-        setSearch(`${c.apellido || ''} ${c.nombre || ''}`.trim() || c.dni || '');
+        const nombreCompleto = `${c.apellido || ''} ${c.nombre || ''}`.trim();
+        setForm((s) => ({
+            ...s,
+            cliente_id: c.id,
+            cliente_nombre: nombreCompleto || s.cliente_nombre,
+            doc_cliente: c.dni || '',
+        }));
+        setSearch(nombreCompleto || c.dni || '');
         setOpenDropdown(false);
         requestAnimationFrame(() => searchInputRef.current?.focus());
     };
@@ -328,7 +355,9 @@ export default function VentaFinanciadaForm({
                                                             <div className="text-sm font-medium">
                                                                 {`${c.apellido || ''} ${c.nombre || ''}`.trim() || 'Sin nombre'}
                                                             </div>
-                                                            <div className="text-xs text-gray-500">{c.dni ? `DNI ${c.dni}` : 'Sin DNI'}</div>
+                                                            <div className="text-xs text-gray-500">
+                                                                {c.dni ? `DNI ${c.dni}` : 'Sin DNI'}
+                                                            </div>
                                                         </button>
                                                     </li>
                                                 ))}
@@ -446,8 +475,7 @@ export default function VentaFinanciadaForm({
                                 className={INPUT_CLS}
                             />
                             <p className="mt-1 text-[11px] text-gray-500">
-                                Recordá que el interés se ingresa de forma manual para esta venta financiada;
-                                el sistema no calcula este porcentaje automáticamente.
+                                El interés se ingresa de forma manual para esta venta financiada.
                             </p>
                         </div>
                         <div className="md:col-span-5">
@@ -471,26 +499,54 @@ export default function VentaFinanciadaForm({
                 {/* Importes */}
                 <fieldset className="rounded-lg border border-gray-200 p-4">
                     <legend className="px-1 text-sm font-medium text-gray-700">Importes</legend>
+                    <p className="mb-2 text-[11px] text-gray-500">
+                        El total se calcula automáticamente como la suma de Neto + IVA + retenciones.
+                    </p>
                     <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
                         <div>
                             <label className="block text-xs font-medium text-gray-700">Neto</label>
-                            <input name="neto" value={form.neto} onChange={onChange} className={INPUT_CLS} />
+                            <input
+                                name="neto"
+                                value={form.neto}
+                                onChange={onChange}
+                                className={INPUT_CLS}
+                            />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-gray-700">IVA</label>
-                            <input name="iva" value={form.iva} onChange={onChange} className={INPUT_CLS} />
+                            <input
+                                name="iva"
+                                value={form.iva}
+                                onChange={onChange}
+                                className={INPUT_CLS}
+                            />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-gray-700">Ret. Gan.</label>
-                            <input name="ret_gan" value={form.ret_gan} onChange={onChange} className={INPUT_CLS} />
+                            <input
+                                name="ret_gan"
+                                value={form.ret_gan}
+                                onChange={onChange}
+                                className={INPUT_CLS}
+                            />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-gray-700">Ret. IVA</label>
-                            <input name="ret_iva" value={form.ret_iva} onChange={onChange} className={INPUT_CLS} />
+                            <input
+                                name="ret_iva"
+                                value={form.ret_iva}
+                                onChange={onChange}
+                                className={INPUT_CLS}
+                            />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-gray-700">Ret. IIBB Tuc.</label>
-                            <input name="ret_iibb_tuc" value={form.ret_iibb_tuc} onChange={onChange} className={INPUT_CLS} />
+                            <input
+                                name="ret_iibb_tuc"
+                                value={form.ret_iibb_tuc}
+                                onChange={onChange}
+                                className={INPUT_CLS}
+                            />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-gray-700">
@@ -499,9 +555,8 @@ export default function VentaFinanciadaForm({
                             <input
                                 name="total"
                                 value={form.total}
-                                onChange={onChange}
-                                required
-                                className={INPUT_CLS}
+                                readOnly
+                                className={INPUT_CLS + ' bg-gray-50 cursor-not-allowed text-right'}
                             />
                         </div>
                     </div>
@@ -519,17 +574,6 @@ export default function VentaFinanciadaForm({
                                 onChange={onChange}
                                 className={INPUT_CLS}
                             />
-                        </div>
-                        <div className="flex items-center gap-2 mt-6 md:mt-0">
-                            <input
-                                id="bonificacion"
-                                type="checkbox"
-                                name="bonificacion"
-                                checked={!!form.bonificacion}
-                                onChange={onChange}
-                                className="h-4 w-4 rounded border border-gray-400 text-blue-600 focus:ring-1 focus:ring-blue-600"
-                            />
-                            <label htmlFor="bonificacion" className="text-sm text-gray-700">Bonificación</label>
                         </div>
                     </div>
                     <div className="mt-3">

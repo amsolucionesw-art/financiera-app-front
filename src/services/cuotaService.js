@@ -63,6 +63,26 @@ export const obtenerCuotas = () => apiFetch(BASE_CUOTAS);
 export const obtenerCuotasVencidas = (params = {}) =>
     apiFetch(joinPath(BASE_CUOTAS, 'vencidas'), { params });
 
+/**
+ * NUEVO: Ruta de cobro automática del COBRADOR logueado.
+ *
+ * Backend sugerido: GET /cuotas/ruta-cobro
+ * Query opcional:
+ *   {
+ *     includeVencidas?: boolean (default true)
+ *     includePendientesHoy?: boolean (default true)
+ *     zonaId?: string|number
+ *     clienteId?: string|number
+ *     modo?: 'plano' | 'separado' (default 'plano')
+ *   }
+ *
+ * Respuesta esperada (según back):
+ *   - { items, meta }   ó   { vencidas, hoy, meta } (modo=separado)
+ *   - envuelto o no en { success, data: ... } (según apiFetch)
+ */
+export const obtenerRutaCobroCobrador = (params = {}) =>
+    apiFetch(joinPath(BASE_CUOTAS, 'ruta-cobro'), { params });
+
 /** Obtener una cuota por ID */
 export const obtenerCuotaPorId = (id) => apiFetch(joinPath(BASE_CUOTAS, id));
 
@@ -215,6 +235,7 @@ export default {
     crearCuota,
     obtenerCuotas,
     obtenerCuotasVencidas,
+    obtenerRutaCobroCobrador,
     obtenerCuotaPorId,
     actualizarCuota,
     eliminarCuota,

@@ -112,25 +112,103 @@ export const previewRefinanciacion = ({
   };
 };
 
+/* ───────────────── Refinanciación: normalización de datos ───────────────── */
+
+/**
+ * Normaliza la info de refinanciación para que el UI pueda marcar:
+ * - R ROJA: crédito refinanciado (estado === 'refinanciado')
+ * - R VERDE: crédito creado a partir de una refinanciación (tiene id_credito_origen)
+ *
+ * Además, asegura compatibilidad de nombres:
+ * - si el back envía `id_credito_origen`, agregamos alias `credito_origen_id`
+ * - agrega flags booleanos por si el UI los prefiere
+ */
+const normalizeRefiFieldsCredito = (credito) => {
+  if (!credito || typeof credito !== 'object') return credito;
+
+  const origenRaw =
+    credito.id_credito_origen ??
+    credito.credito_origen_id ??
+    credito.creditoOrigenId ??
+    credito.idCreditoOrigen ??
+    null;
+
+  const origenId = Number(origenRaw);
+  const tieneOrigen = Number.isFinite(origenId) && origenId > 0;
+
+  // Alias consistente
+  if (credito.credito_origen_id === undefined) {
+    credito.credito_origen_id = tieneOrigen ? origenId : null;
+  }
+  if (credito.id_credito_origen === undefined) {
+    credito.id_credito_origen = tieneOrigen ? origenId : null;
+  }
+
+  // Flags consistentes para UI
+  const estado = String(credito.estado || '').toLowerCase();
+  credito.es_credito_refinanciado = estado === 'refinanciado';
+  credito.es_credito_de_refinanciacion = tieneOrigen;
+
+  return credito;
+};
+
+const normalizeRefiFieldsDeep = (payload) => {
+  // Array directo de créditos
+  if (Array.isArray(payload)) {
+    return payload.map((c) => normalizeRefiFieldsCredito(c));
+  }
+
+  // Objeto "cliente" con creditos[]
+  if (payload && typeof payload === 'object' && Array.isArray(payload.creditos)) {
+    payload.creditos = payload.creditos.map((c) => normalizeRefiFieldsCredito(c));
+    return payload;
+  }
+
+  // Respuesta anidada tipo { data: ... }
+  if (payload && typeof payload === 'object' && payload.data !== undefined) {
+    payload.data = normalizeRefiFieldsDeep(payload.data);
+    return payload;
+  }
+
+  // Objeto "cliente con créditos" anidado tipo { cliente: { creditos: [...] } } (por las dudas)
+  if (payload && typeof payload === 'object' && payload.cliente && typeof payload.cliente === 'object') {
+    payload.cliente = normalizeRefiFieldsDeep(payload.cliente);
+    return payload;
+  }
+
+  // Crédito único
+  if (payload && typeof payload === 'object' && (payload.id || payload.estado || payload.modalidad_credito)) {
+    return normalizeRefiFieldsCredito(payload);
+  }
+
+  return payload;
+};
+
 /* ───────────────── Créditos: CRUD & queries ───────────────── */
 
 /**
  * Obtiene todos los créditos (con filtros opcionales).
  * @param {object} params - { estado, cliente_id, ... }
  */
-export const obtenerCreditos = (params = {}) =>
-  apiFetch(BASE, { params });
+export const obtenerCreditos = async (params = {}) => {
+  const resp = await apiFetch(BASE, { params });
+  return normalizeRefiFieldsDeep(resp);
+};
 
 /**
  * Obtiene los créditos de un cliente con filtros del back:
  * estado, modalidad, tipo, desde (YYYY-MM-DD), hasta (YYYY-MM-DD), conCuotasVencidas (bool/1)
  */
-export const obtenerCreditosPorCliente = (clienteId, params = {}) =>
-  apiFetch(joinPath(BASE, 'cliente', clienteId), { params });
+export const obtenerCreditosPorCliente = async (clienteId, params = {}) => {
+  const resp = await apiFetch(joinPath(BASE, 'cliente', clienteId), { params });
+  return normalizeRefiFieldsDeep(resp);
+};
 
 /** Obtiene un crédito por su ID */
-export const obtenerCreditoPorId = (id) =>
-  apiFetch(joinPath(BASE, id));
+export const obtenerCreditoPorId = async (id) => {
+  const resp = await apiFetch(joinPath(BASE, id));
+  return normalizeRefiFieldsDeep(resp);
+};
 
 /**
  * Resumen de crédito LIBRE (capital, interés del día y total de liquidación).
@@ -225,7 +303,7 @@ export const eliminarCreditoSeguro = async (id) => {
  * El backend ya valida modalidad (común, progresivo, libre) y
  * calcula la base de refinanciación (saldo + mora pendiente).
  */
-export const refinanciarCredito = (
+export const refinanciarCredito = async (
   creditoId,
   { opcion, tasaManual = 0, tipo_credito, cantidad_cuotas }
 ) => {
@@ -235,10 +313,14 @@ export const refinanciarCredito = (
   if (cantidad_cuotas !== undefined && cantidad_cuotas !== null) {
     body.cantidad_cuotas = sanitizeInt(cantidad_cuotas, 1);
   }
-  return apiFetch(joinPath(BASE, creditoId, 'refinanciar'), {
+
+  const resp = await apiFetch(joinPath(BASE, creditoId, 'refinanciar'), {
     method: 'POST',
     body,
   });
+
+  // En algunos UIs se usa el ID devuelto, pero igual normalizamos por consistencia
+  return normalizeRefiFieldsDeep(resp);
 };
 
 /**
@@ -310,7 +392,7 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
 /**
  * CANCELAR / LIQUIDAR crédito (pago único con recibo único).
  * Backend: POST /creditos/:id/cancelar
- * 
+ *
  * @param {number|string} creditoId
  * @param {object} options
  * @param {number} options.forma_pago_id                            // requerido

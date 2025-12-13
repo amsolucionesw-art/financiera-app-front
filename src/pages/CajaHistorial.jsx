@@ -25,17 +25,21 @@ const toYMD = (v) => {
     const dd = String(d.getUTCDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
 };
+
 const addDaysUTC = (ymd, days) => {
     const [y, m, d] = String(ymd).split('-').map(Number);
     const date = new Date(Date.UTC(y, m - 1, d));
     date.setUTCDate(date.getUTCDate() + days);
     return toYMD(date);
 };
+
 const firstDay = (anio, mes) => `${anio}-${String(mes).padStart(2, '0')}-01`;
+
 const lastDay = (anio, mes) => {
     const d = new Date(anio, mes, 0);
     return toYMD(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
 };
+
 const lastNDaysRange = (n = 3) => {
     const hoy = new Date();
     const hasta = toYMD(hoy);
@@ -48,27 +52,27 @@ const tipoLabel = (t) =>
     t === 'ingreso'
         ? 'Ingreso'
         : t === 'egreso'
-        ? 'Egreso'
-        : t === 'ajuste'
-        ? 'Ajuste'
-        : t === 'apertura'
-        ? 'Apertura'
-        : t === 'cierre'
-        ? 'Cierre'
-        : t;
+            ? 'Egreso'
+            : t === 'ajuste'
+                ? 'Ajuste'
+                : t === 'apertura'
+                    ? 'Apertura'
+                    : t === 'cierre'
+                        ? 'Cierre'
+                        : t;
 
 const chipClass = (t) =>
     t === 'ingreso'
         ? 'bg-green-100 text-green-700 ring-green-200'
         : t === 'egreso'
-        ? 'bg-red-100 text-red-700 ring-red-200'
-        : t === 'ajuste'
-        ? 'bg-yellow-100 text-yellow-700 ring-yellow-200'
-        : t === 'apertura'
-        ? 'bg-blue-100 text-blue-700 ring-blue-200'
-        : t === 'cierre'
-        ? 'bg-gray-100 text-gray-700 ring-gray-200'
-        : 'bg-slate-100 text-slate-700 ring-slate-200';
+            ? 'bg-red-100 text-red-700 ring-red-200'
+            : t === 'ajuste'
+                ? 'bg-yellow-100 text-yellow-700 ring-yellow-200'
+                : t === 'apertura'
+                    ? 'bg-blue-100 text-blue-700 ring-blue-200'
+                    : t === 'cierre'
+                        ? 'bg-gray-100 text-gray-700 ring-gray-200'
+                        : 'bg-slate-100 text-slate-700 ring-slate-200';
 
 /* Alineadas con referencia_tipo del backend */
 const CATEGORIAS = [
@@ -80,12 +84,57 @@ const CATEGORIAS = [
     { value: 'manual', label: 'Manual (otra)' },
     { value: 'null', label: 'Sin categoría (NULL)' },
 ];
+
 const CATEGORIAS_MAP = Object.fromEntries(CATEGORIAS.map((c) => [c.value, c.label]));
-const referenciaTipoLabel = (v) => {
+
+// Categoría con soporte para venta financiada
+const referenciaTipoLabel = (v, esVentaFinanciada = false) => {
     if (v == null) return 'Sin categoría';
     const key = String(v).toLowerCase();
     if (key === 'null') return 'Sin categoría';
+    if (key === 'venta') {
+        return esVentaFinanciada ? 'Venta financiada' : (CATEGORIAS_MAP['venta'] || 'Venta');
+    }
     return CATEGORIAS_MAP[key] || v;
+};
+
+// Etiqueta humana para la referencia (igual línea que CajaMensual)
+const referenciaIdLabel = (refTipo, refId) => {
+    if (refId == null || refId === '') return '—';
+    const id = String(refId);
+    const t = String(refTipo || '').toLowerCase();
+
+    if (t === 'venta') return `Venta #${id}`;
+    if (t === 'recibo') return `Recibo #${id}`;
+    if (t === 'credito') return `Crédito #${id}`;
+    if (t === 'gasto') return `Gasto #${id}`;
+    if (t === 'compra') return `Compra #${id}`;
+    if (t === 'manual') return `Ref. #${id}`;
+
+    return `#${id}`;
+};
+
+// Monto con signo (solo visual)
+const montoConSigno = (monto, tipo) => {
+    const n = Number(monto || 0);
+    const abs = Math.abs(n);
+    const base = abs.toLocaleString('es-AR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+
+    const t = String(tipo || '').toLowerCase();
+    const esNegativo = t === 'egreso' || t === 'cierre';
+
+    return `${esNegativo ? '-' : '+'} ${base}`;
+};
+
+// Colores para el monto según tipo
+const montoTextClass = (tipo) => {
+    const t = String(tipo || '').toLowerCase();
+    if (t === 'egreso' || t === 'cierre') return 'text-red-700';
+    if (t === 'ingreso' || t === 'apertura' || t === 'ajuste') return 'text-emerald-700';
+    return 'text-slate-800';
 };
 
 /* ============ Helper: detectar superadmin desde token ============ */
@@ -108,14 +157,12 @@ const esSuperadminDesdeToken = (decoded) => {
     const rolStr = String(rawRol || '').toLowerCase();
     if (rolStr === 'superadmin') return true;
 
-    // IDs numéricos
     const rolIdRaw = decoded.rol_id ?? decoded.usuario?.rol_id;
     const rolId = typeof rolIdRaw === 'number' ? rolIdRaw : Number(rolIdRaw);
 
-    // Ajustar si cambian tus IDs
     if (Number.isFinite(rolId)) {
         if (rolId === 0) return true; // superadmin = 0
-        // if (rolId === 1) return true; // deja comentado si solo 0 es superadmin
+        // if (rolId === 1) return true; // habilitar si quisieras admin también
     }
 
     return false;
@@ -196,7 +243,7 @@ const Historial = () => {
 
             const data = await obtenerMovimientos(params);
             setMovs(Array.isArray(data) ? data : []);
-            setPage(1); // reset paginación al cargar
+            setPage(1);
         } catch (err) {
             console.error('Error movimientos historial', err);
             Swal.fire('Error', err.message || 'No se pudieron cargar movimientos', 'error');
@@ -214,9 +261,7 @@ const Historial = () => {
                 return;
             }
             const decoded = jwtDecode(token);
-
             console.log('[CajaHistorial] decoded token:', decoded);
-
             setEsSuperadmin(esSuperadminDesdeToken(decoded));
         } catch (err) {
             console.error('Error decodificando token JWT', err);
@@ -247,16 +292,19 @@ const Historial = () => {
                 m.usuario?.nombre_completo ||
                 m.usuario?.nombre_usuario ||
                 (m.usuario_id ? `#${m.usuario_id}` : ''),
-            categoria: referenciaTipoLabel(m.referencia_tipo),
-            referencia_id: m.referencia_tipo ? (m.referencia_id ?? '') : '',
+            categoria: referenciaTipoLabel(m.referencia_tipo, m.es_venta_financiada),
+            ref_tipo: m.referencia_tipo ?? '',
+            ref_id: m.referencia_id ?? '',
             monto: Number(m.monto || 0).toFixed(2).replace('.', ','),
         }));
+
         const label = mostrarMesCompleto
             ? `${anio}-${String(mes).padStart(2, '0')}`
             : (() => {
                   const { desde, hasta } = lastNDaysRange(3);
                   return `${desde}_a_${hasta}`;
               })();
+
         exportToCSV(`caja-historial-${label}.csv`, rows, [
             'fecha',
             'hora',
@@ -265,7 +313,8 @@ const Historial = () => {
             'forma_pago',
             'usuario',
             'categoria',
-            'referencia_id',
+            'ref_tipo',
+            'ref_id',
             'monto',
         ]);
     };
@@ -364,14 +413,9 @@ const Historial = () => {
                             type="checkbox"
                             className="h-4 w-4 rounded border-slate-300"
                             checked={mostrarMesCompleto}
-                            onChange={(e) =>
-                                setMostrarMesCompleto(e.target.checked)
-                            }
+                            onChange={(e) => setMostrarMesCompleto(e.target.checked)}
                         />
-                        <label
-                            htmlFor="toggle-mes"
-                            className="text-sm"
-                        >
+                        <label htmlFor="toggle-mes" className="text-sm">
                             {mostrarMesCompleto
                                 ? 'Mostrando mes completo'
                                 : 'Mostrar mes completo'}
@@ -393,8 +437,7 @@ const Historial = () => {
                                 onChange={(e) =>
                                     setAnio(
                                         Number(
-                                            e.target.value ||
-                                                new Date().getFullYear(),
+                                            e.target.value || new Date().getFullYear(),
                                         ),
                                     )
                                 }
@@ -408,9 +451,7 @@ const Historial = () => {
                                 disabled={!mostrarMesCompleto}
                                 className="w-36 rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500"
                                 value={mes}
-                                onChange={(e) =>
-                                    setMes(Number(e.target.value))
-                                }
+                                onChange={(e) => setMes(Number(e.target.value))}
                             >
                                 {Array.from({ length: 12 }).map((_, i) => {
                                     const m = i + 1;
@@ -440,8 +481,7 @@ const Historial = () => {
                     className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
                     title="Exportar la tabla visible a CSV"
                 >
-                    Exportar CSV (
-                    {mostrarMesCompleto ? 'mes completo' : 'últimos 3 días'})
+                    Exportar CSV ({mostrarMesCompleto ? 'mes completo' : 'últimos 3 días'})
                 </button>
                 <button
                     onClick={() => setFiltrosOpen((v) => !v)}
@@ -467,9 +507,7 @@ const Historial = () => {
                                 value={filtroTipos}
                                 onChange={(e) =>
                                     setFiltroTipos(
-                                        Array.from(
-                                            e.target.selectedOptions,
-                                        ).map((o) => o.value),
+                                        Array.from(e.target.selectedOptions).map((o) => o.value),
                                     )
                                 }
                             >
@@ -492,17 +530,12 @@ const Historial = () => {
                             <select
                                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                                 value={formaPagoId}
-                                onChange={(e) =>
-                                    setFormaPagoId(e.target.value)
-                                }
+                                onChange={(e) => setFormaPagoId(e.target.value)}
                             >
                                 <option value="">(Todas)</option>
                                 <option value="null">Sin especificar</option>
                                 {formas.map((f) => (
-                                    <option
-                                        key={f.id}
-                                        value={String(f.id)}
-                                    >
+                                    <option key={f.id} value={String(f.id)}>
                                         {f.nombre}
                                     </option>
                                 ))}
@@ -520,17 +553,12 @@ const Historial = () => {
                                 value={categorias}
                                 onChange={(e) =>
                                     setCategorias(
-                                        Array.from(
-                                            e.target.selectedOptions,
-                                        ).map((o) => o.value),
+                                        Array.from(e.target.selectedOptions).map((o) => o.value),
                                     )
                                 }
                             >
                                 {CATEGORIAS.map((c) => (
-                                    <option
-                                        key={c.value}
-                                        value={c.value}
-                                    >
+                                    <option key={c.value} value={c.value}>
                                         {c.label}
                                     </option>
                                 ))}
@@ -547,9 +575,7 @@ const Historial = () => {
                                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                                 placeholder="Numérico"
                                 value={refId}
-                                onChange={(e) =>
-                                    setRefId(e.target.value)
-                                }
+                                onChange={(e) => setRefId(e.target.value)}
                             />
                         </div>
 
@@ -562,9 +588,7 @@ const Historial = () => {
                                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                                 placeholder="Ej: acreditación crédito, insumos, etc."
                                 value={q}
-                                onChange={(e) =>
-                                    setQ(e.target.value)
-                                }
+                                onChange={(e) => setQ(e.target.value)}
                             />
                         </div>
                     </div>
@@ -620,43 +644,29 @@ const Historial = () => {
                                 <th className="px-4 py-2">Concepto</th>
                                 <th className="px-4 py-2">Forma de pago</th>
                                 <th className="px-4 py-2">Usuario</th>
+                                <th className="px-4 py-2">Ref. ID</th>
                                 <th className="px-4 py-2">Categoría</th>
-                                <th className="px-4 py-2">Referencia</th>
                                 <th className="px-4 py-2 text-right">Monto</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading ? (
                                 <tr>
-                                    <td
-                                        colSpan={9}
-                                        className="px-4 py-6 text-center text-slate-500"
-                                    >
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
                                         Cargando movimientos...
                                     </td>
                                 </tr>
                             ) : paginatedMovs.length === 0 ? (
                                 <tr>
-                                    <td
-                                        colSpan={9}
-                                        className="px-4 py-6 text-center text-slate-500"
-                                    >
-                                        No hay movimientos para el período con los
-                                        filtros.
+                                    <td colSpan={9} className="px-4 py-6 text-center text-slate-500">
+                                        No hay movimientos para el período con los filtros.
                                     </td>
                                 </tr>
                             ) : (
                                 paginatedMovs.map((m) => (
-                                    <tr
-                                        key={m.id}
-                                        className="border-t border-slate-100"
-                                    >
-                                        <td className="px-4 py-2">
-                                            {m.fecha}
-                                        </td>
-                                        <td className="px-4 py-2">
-                                            {m.hora}
-                                        </td>
+                                    <tr key={m.id} className="border-t border-slate-100">
+                                        <td className="px-4 py-2">{m.fecha}</td>
+                                        <td className="px-4 py-2">{m.hora}</td>
                                         <td className="px-4 py-2">
                                             <span
                                                 className={`rounded-full px-2 py-0.5 text-xs ring-1 ${chipClass(
@@ -666,9 +676,7 @@ const Historial = () => {
                                                 {tipoLabel(m.tipo)}
                                             </span>
                                         </td>
-                                        <td className="px-4 py-2">
-                                            {m.concepto}
-                                        </td>
+                                        <td className="px-4 py-2">{m.concepto}</td>
                                         <td className="px-4 py-2">
                                             {m.formaPago?.nombre ||
                                                 (m.forma_pago_id == null
@@ -678,22 +686,20 @@ const Historial = () => {
                                         <td className="px-4 py-2">
                                             {m.usuario?.nombre_completo ||
                                                 m.usuario?.nombre_usuario ||
-                                                (m.usuario_id
-                                                    ? `#${m.usuario_id}`
-                                                    : '—')}
+                                                (m.usuario_id ? `#${m.usuario_id}` : '—')}
                                         </td>
                                         <td className="px-4 py-2">
-                                            {referenciaTipoLabel(
-                                                m.referencia_tipo,
-                                            )}
+                                            {referenciaIdLabel(m.referencia_tipo, m.referencia_id)}
                                         </td>
                                         <td className="px-4 py-2">
-                                            {m.referencia_tipo
-                                                ? `${m.referencia_id ?? ''}`
-                                                : '—'}
+                                            {referenciaTipoLabel(m.referencia_tipo, m.es_venta_financiada)}
                                         </td>
-                                        <td className="px-4 py-2 text-right font-medium">
-                                            {fmtARS(Number(m.monto))}
+                                        <td
+                                            className={`px-4 py-2 text-right font-medium ${montoTextClass(
+                                                m.tipo,
+                                            )}`}
+                                        >
+                                            {montoConSigno(m.monto, m.tipo)}
                                         </td>
                                     </tr>
                                 ))
@@ -712,10 +718,7 @@ const Historial = () => {
                                 Mostrando{' '}
                                 <strong>
                                     {(currentPage - 1) * pageSize + 1}–
-                                    {Math.min(
-                                        currentPage * pageSize,
-                                        totalItems,
-                                    )}
+                                    {Math.min(currentPage * pageSize, totalItems)}
                                 </strong>{' '}
                                 de <strong>{totalItems}</strong> movimientos
                             </>
@@ -750,9 +753,7 @@ const Historial = () => {
                             </button>
                             <button
                                 className="rounded-md border border-slate-300 px-2 py-1 text-xs disabled:opacity-50"
-                                onClick={() =>
-                                    setPage((p) => Math.max(1, p - 1))
-                                }
+                                onClick={() => setPage((p) => Math.max(1, p - 1))}
                                 disabled={currentPage <= 1}
                             >
                                 Anterior
@@ -762,11 +763,7 @@ const Historial = () => {
                             </span>
                             <button
                                 className="rounded-md border border-slate-300 px-2 py-1 text-xs disabled:opacity-50"
-                                onClick={() =>
-                                    setPage((p) =>
-                                        Math.min(totalPages, p + 1),
-                                    )
-                                }
+                                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                                 disabled={currentPage >= totalPages}
                             >
                                 Siguiente

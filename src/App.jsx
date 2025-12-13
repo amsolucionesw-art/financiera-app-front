@@ -26,6 +26,9 @@ import Recibo from './pages/Recibo';
 import CuotasVencidas from './pages/CuotasVencidas';
 import CuotaDetalle from './pages/CuotaDetalle';
 
+// ✅ NUEVO: Ruta de cobro cobrador
+import RutaCobro from './pages/RutaCobro';
+
 // ✅ Caja
 import CajaDiaria from './pages/CajaDiaria';
 import CajaMensual from './pages/CajaMensual';
@@ -142,8 +145,12 @@ const App = () => (
           <Route element={<PrivateRouteConRol rolesPermitidos={[2]} />}>
             {/* Ruta original */}
             <Route path="clientes-cobrador" element={<ClientesCobrador />} />
-            {/* Alias para que el botón "Mi ruta de hoy" ("/clientes/por-cobrador") funcione */}
+
+            {/* Alias para que el botón viejo siga funcionando */}
             <Route path="clientes/por-cobrador" element={<ClientesCobrador />} />
+
+            {/* ✅ NUEVO: Ruta de cobro (consume /cuotas/ruta-cobro) */}
+            <Route path="cuotas/ruta-cobro" element={<RutaCobro />} />
           </Route>
         </Route>
       </Route>
@@ -155,3 +162,4 @@ const App = () => (
 );
 
 export default App;
+

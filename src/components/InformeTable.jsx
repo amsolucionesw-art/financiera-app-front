@@ -26,10 +26,28 @@ const isDateLike = (v) => {
     return false;
 };
 
-/** Formateo por defecto de celdas */
-const renderValuePretty = (v) => {
+/** Formateo por defecto de celdas, con conocimiento de la columna */
+const renderValuePretty = (v, column) => {
     if (v == null) return '';
-    if (isNumberLike(v)) return nf.format(Number(v));
+
+    const colId = column?.id ? String(column.id).toLowerCase() : '';
+    const meta = column?.columnDef?.meta || {};
+
+    // 1) Si la columna está marcada explícitamente como "raw" → mostrar tal cual
+    if (meta.format === 'raw') {
+        return String(v ?? '');
+    }
+
+    // 2) Columnas que representan identificadores/textos “numéricos legibles”
+    const isDniLikeId = /(dni|documento|doc|cuil|cuit)/.test(colId);
+    const isPhoneLikeId = /(telefono|tel|celu|celular|movil|whatsapp|wp|contacto)/.test(colId);
+    const isAddressLikeId = /(direccion|domicilio|calle|barrio|localidad|ciudad)/.test(colId);
+
+    if (isDniLikeId || isPhoneLikeId || isAddressLikeId) {
+        return String(v ?? '');
+    }
+
+    // 3) Fechas
     if (isDateLike(v)) {
         // mostrar sólo YYYY-MM-DD
         const d = new Date(v);
@@ -40,9 +58,16 @@ const renderValuePretty = (v) => {
             return `${y}-${m}-${dd}`;
         }
         // si vino ya como YYYY-MM-DD
-        return v.slice(0, 10);
+        return String(v).slice(0, 10);
     }
+
+    // 4) Números: formatear bonito (para montos, cantidades, etc.)
+    if (isNumberLike(v)) return nf.format(Number(v));
+
+    // 5) Booleanos
     if (typeof v === 'boolean') return v ? 'Sí' : 'No';
+
+    // 6) Texto genérico
     return String(v);
 };
 
@@ -55,13 +80,43 @@ const SortIndicator = ({ column }) => {
     );
 };
 
+/**
+ * Define si una columna debe participar en los TOTALES.
+ * - Primero respeta meta.sum (true/false) si está definido.
+ * - Si no está definido, aplica una heurística por nombre de columna (id).
+ *   Incluye montos, totales, saldos, intereses, etc.
+ *   Excluye DNI, teléfonos, IDs, números de documento, etc.
+ */
+const isSummableColumn = (col) => {
+    const id = String(col.id || '').toLowerCase();
+    const meta = col.columnDef?.meta || {};
+
+    // Configuración explícita desde el columnDef
+    if (meta.sum === true) return true;
+    if (meta.sum === false) return false;
+
+    // Exclusiones claras: no tiene sentido sumar estos campos
+    if (/(dni|documento|doc|cuil|cuit)/.test(id)) return false;
+    if (/(telefono|tel|celu|celular|movil|whatsapp|wp|contacto)/.test(id)) return false;
+    if (/(^id$|_id$|id_cliente|id_credito|id_cuota|id_pago)/.test(id)) return false;
+    if (/(nro|numero|num)/.test(id)) return false;
+
+    // Inclusiones típicas de montos/cantidades en tu dominio
+    if (/(monto|importe|total|saldo|mora|capital|interes|cuota|pagado|abonado|valor|bruto|neto|costo|precio|cantidad|cant)/.test(id)) {
+        return true;
+    }
+
+    // Por defecto, no sumar (más conservador que antes)
+    return false;
+};
+
 const InformeTable = ({ data, columns, loading }) => {
     // Default column: cell renderer que formatea por defecto si no se provee cell custom
     const defaultColumn = useMemo(
         () => ({
             cell: (ctx) => {
                 const raw = ctx.getValue();
-                return renderValuePretty(raw);
+                return renderValuePretty(raw, ctx.column);
             }
         }),
         []
@@ -117,13 +172,24 @@ const InformeTable = ({ data, columns, loading }) => {
         return set;
     }, [data, visibleCols]);
 
-    // Totales por columna (numéricas) de la PÁGINA ACTUAL
+    // Conjunto de columnas que SÍ deben sumarse (intersección: numéricas + "sumables")
+    const summableColIds = useMemo(() => {
+        const set = new Set();
+        visibleCols.forEach((col) => {
+            const id = col.id;
+            if (!numericColIds.has(id)) return;
+            if (isSummableColumn(col)) set.add(id);
+        });
+        return set;
+    }, [visibleCols, numericColIds]);
+
+    // Totales por columna (solo columnas sumables) de la PÁGINA ACTUAL
     const totals = useMemo(() => {
         if (!Array.isArray(rows) || rows.length === 0) return {};
         const acc = {};
         visibleCols.forEach((col) => {
             const id = col.id;
-            if (!numericColIds.has(id)) return;
+            if (!summableColIds.has(id)) return;
             let sum = 0;
             for (let i = 0; i < rows.length; i++) {
                 const v = rows[i]?.original?.[id];
@@ -132,7 +198,7 @@ const InformeTable = ({ data, columns, loading }) => {
             acc[id] = sum;
         });
         return acc;
-    }, [rows, visibleCols, numericColIds]);
+    }, [rows, visibleCols, summableColIds]);
 
     const hasTotals = Object.keys(totals).length > 0;
 
@@ -144,17 +210,24 @@ const InformeTable = ({ data, columns, loading }) => {
     const totalRows = allRows.length;
 
     return (
-        <div className="overflow-hidden rounded-xl ring-1 ring-gray-200" role="region" aria-label="Resultados del informe">
-            {/* Tabla */}
-            <div className="overflow-auto">
+        <div
+            className="rounded-xl ring-1 ring-gray-200"
+            role="region"
+            aria-label="Resultados del informe"
+        >
+            {/* Tabla con scroll interno y header sticky */}
+            <div className="max-h-[70vh] overflow-auto">
                 <table className="min-w-full table-auto divide-y divide-gray-200 text-sm">
                     <thead className="bg-gray-100">
                         {headerGroups.map((headerGroup) => (
-                            <tr key={headerGroup.id}>
+                            <tr key={headerGroup.id} className="bg-gray-100">
                                 {headerGroup.headers.map((header) => {
                                     const id = header.column.id;
-                                    const alignClass = numericColIds.has(id) ? 'text-right' : 'text-left';
-                                    const sortable = header.column.getCanSort?.() ?? true; // permitir ordenar por defecto
+                                    const alignClass = numericColIds.has(id)
+                                        ? 'text-right'
+                                        : 'text-left';
+                                    const sortable =
+                                        header.column.getCanSort?.() ?? true; // permitir ordenar por defecto
                                     return (
                                         <th
                                             key={header.id}
@@ -165,11 +238,20 @@ const InformeTable = ({ data, columns, loading }) => {
                                                 <button
                                                     type="button"
                                                     className={`group inline-flex items-center ${alignClass} hover:opacity-80`}
-                                                    onClick={sortable ? header.column.getToggleSortingHandler() : undefined}
+                                                    onClick={
+                                                        sortable
+                                                            ? header.column.getToggleSortingHandler()
+                                                            : undefined
+                                                    }
                                                     title={sortable ? 'Ordenar' : ''}
                                                 >
-                                                    {flexRender(header.column.columnDef.header, header.getContext())}
-                                                    {sortable && <SortIndicator column={header.column} />}
+                                                    {flexRender(
+                                                        header.column.columnDef.header,
+                                                        header.getContext()
+                                                    )}
+                                                    {sortable && (
+                                                        <SortIndicator column={header.column} />
+                                                    )}
                                                 </button>
                                             )}
                                         </th>
@@ -197,10 +279,15 @@ const InformeTable = ({ data, columns, loading }) => {
                                 <tr key={row.id} className="odd:bg-white even:bg-gray-50">
                                     {row.getVisibleCells().map((cell) => {
                                         const id = cell.column.id;
-                                        const alignClass = numericColIds.has(id) ? 'text-right' : 'text-left';
+                                        const alignClass = numericColIds.has(id)
+                                            ? 'text-right'
+                                            : 'text-left';
                                         return (
                                             <td key={cell.id} className={`px-3 py-2 ${alignClass}`}>
-                                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                {flexRender(
+                                                    cell.column.columnDef.cell,
+                                                    cell.getContext()
+                                                )}
                                             </td>
                                         );
                                     })}
@@ -216,14 +303,23 @@ const InformeTable = ({ data, columns, loading }) => {
                                 {visibleCols.map((col, idx) => {
                                     const id = col.id;
                                     const isNumeric = numericColIds.has(id);
+                                    const isSummable = summableColIds.has(id);
                                     const val = totals[id];
+
                                     return (
                                         <td
                                             key={`t-${id}`}
-                                            className={`px-3 py-2 ${isNumeric ? 'text-right font-semibold' : 'text-left'} ${idx === 0 ? 'font-semibold' : ''
-                                                }`}
+                                            className={`px-3 py-2 ${
+                                                isNumeric && isSummable
+                                                    ? 'text-right font-semibold'
+                                                    : 'text-left'
+                                            } ${idx === 0 ? 'font-semibold' : ''}`}
                                         >
-                                            {idx === 0 ? 'Totales (página)' : isNumeric ? nf.format(val || 0) : ''}
+                                            {idx === 0
+                                                ? 'Totales (página)'
+                                                : isNumeric && isSummable
+                                                ? nf.format(val || 0)
+                                                : ''}
                                         </td>
                                     );
                                 })}
@@ -238,7 +334,8 @@ const InformeTable = ({ data, columns, loading }) => {
                 <div className="text-xs text-gray-600">
                     {totalRows > 0 ? (
                         <>
-                            Página <strong>{pageIndex + 1}</strong> de <strong>{Math.max(pageCount, 1)}</strong> ·{' '}
+                            Página <strong>{pageIndex + 1}</strong> de{' '}
+                            <strong>{Math.max(pageCount, 1)}</strong> ·{' '}
                             <span className="hidden sm:inline">Filas totales: </span>
                             <strong>{nf.format(totalRows)}</strong>
                         </>
@@ -254,7 +351,10 @@ const InformeTable = ({ data, columns, loading }) => {
                             className="rounded border px-2 py-1 text-xs"
                             value={pageSize}
                             onChange={(e) => {
-                                const v = e.target.value === 'all' ? (Array.isArray(data) ? data.length || 1 : 10000) : Number(e.target.value);
+                                const v =
+                                    e.target.value === 'all'
+                                        ? (Array.isArray(data) ? data.length || 1 : 10000)
+                                        : Number(e.target.value);
                                 setPageSize(v);
                                 table.setPageIndex(0);
                             }}
@@ -313,3 +413,4 @@ const InformeTable = ({ data, columns, loading }) => {
 };
 
 export default InformeTable;
+

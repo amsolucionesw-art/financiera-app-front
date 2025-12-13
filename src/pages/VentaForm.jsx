@@ -27,11 +27,25 @@ const toNumber = (v) => {
     return Number.isFinite(n) ? n : 0;
 };
 
-// 🎨 Clases base para inputs (alineado con VentaFinanciadaForm)
+// 🎨 Clases base para inputs
 const INPUT_CLS =
     'mt-1 w-full rounded-md border border-gray-400 px-3 py-2 bg-white placeholder-gray-400 ' +
     'focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500';
 const MONEY_INPUT = INPUT_CLS + ' text-right';
+
+// Recalcula TOTAL a partir del desglose impositivo
+const calcularTotalDesdeImpuestos = (values) => {
+    const neto = toNumber(values.neto);
+    const iva = toNumber(values.iva);
+    const ret_gan = toNumber(values.ret_gan);
+    const ret_iva = toNumber(values.ret_iva);
+    const ret_iibb_tuc = toNumber(values.ret_iibb_tuc);
+
+    const totalNum = neto + iva + ret_gan + ret_iva + ret_iibb_tuc;
+    if (!totalNum) return '';
+    // Devolvemos con coma para que se vea “normal” al usuario
+    return totalNum.toFixed(2).replace('.', ',');
+};
 
 export default function VentaForm() {
     const { id } = useParams();
@@ -71,9 +85,9 @@ export default function VentaForm() {
         forma_pago_id: '',
 
         // Extras
-        bonificacion: false,
         vendedor: '',
         observacion: '',
+        detalle_producto: '', // 🆕 Detalle del producto vendido
     });
 
     /* ───────── Carga de formas de pago ───────── */
@@ -108,7 +122,7 @@ export default function VentaForm() {
                 setLoading(true);
                 try {
                     const data = await obtenerVenta(id);
-                    setForm({
+                    const base = {
                         fecha_imputacion: data?.fecha_imputacion || today,
                         numero_comprobante: data?.numero_comprobante || '',
                         cliente_id: data?.cliente_id ?? '',
@@ -121,9 +135,16 @@ export default function VentaForm() {
                         ret_iibb_tuc: data?.ret_iibb_tuc ?? '',
                         total: data?.total ?? '',
                         forma_pago_id: data?.forma_pago_id ?? '',
-                        bonificacion: !!data?.bonificacion,
                         vendedor: data?.vendedor || '',
                         observacion: data?.observacion || '',
+                        detalle_producto: data?.detalle_producto || '', // 🆕 cargar desde back
+                    };
+
+                    // Reajustamos el total por si no estaba alineado con el desglose
+                    const totalAuto = calcularTotalDesdeImpuestos(base);
+                    setForm({
+                        ...base,
+                        total: totalAuto || base.total || '',
                     });
                 } catch (e) {
                     setErr(e?.message || 'No se pudo cargar la venta');
@@ -165,7 +186,16 @@ export default function VentaForm() {
     /* ───────── Handlers ───────── */
     const onChange = (e) => {
         const { name, value, type, checked } = e.target;
-        setForm((s) => ({ ...s, [name]: type === 'checkbox' ? checked : value }));
+        setForm((s) => {
+            const next = { ...s, [name]: type === 'checkbox' ? checked : value };
+
+            // Si se modifica algún campo impositivo, recalculamos el total automático
+            if (['neto', 'iva', 'ret_gan', 'ret_iva', 'ret_iibb_tuc'].includes(name)) {
+                next.total = calcularTotalDesdeImpuestos(next);
+            }
+
+            return next;
+        });
     };
 
     const selectCliente = (c) => {
@@ -200,9 +230,9 @@ export default function VentaForm() {
                     form.forma_pago_id === '' || form.forma_pago_id === 'null'
                         ? null
                         : Number(form.forma_pago_id),
-                bonificacion: !!form.bonificacion,
                 vendedor: form.vendedor.trim(),
                 observacion: form.observacion.trim(),
+                detalle_producto: form.detalle_producto.trim(), // 🆕 enviar al back
             };
 
             const payload = editMode
@@ -211,7 +241,7 @@ export default function VentaForm() {
 
             // Validaciones mínimas
             if (!payload.fecha_imputacion || !form.cliente_nombre || !payload.total) {
-                throw new Error('Completá los campos obligatorios (fecha, cliente, total).');
+                throw new Error('Completá los campos obligatorios (fecha, cliente, desglose con total > 0).');
             }
             if (!(payload.cliente_id > 0)) {
                 throw new Error('Seleccioná un cliente válido.');
@@ -312,13 +342,17 @@ export default function VentaForm() {
                 {/* Sección: Cliente */}
                 <div className="border-y border-gray-200 p-4 bg-gray-50/60">
                     <h2 className="text-sm font-semibold text-gray-800">Datos del cliente</h2>
-                    <p className="text-xs text-gray-500">Seleccioná el cliente desde el buscador. El ID es obligatorio.</p>
+                    <p className="text-xs text-gray-500">
+                        Seleccioná el cliente desde el buscador. El ID es obligatorio.
+                    </p>
                 </div>
 
                 <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-4">
                     {/* Autocomplete */}
                     <div className="md:col-span-2 relative" ref={listRef}>
-                        <label className="block text-xs font-medium text-gray-700">Buscar cliente (nombre o ID)</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Buscar cliente (nombre o ID)
+                        </label>
                         <input
                             value={qCli}
                             onChange={(e) => {
@@ -351,9 +385,11 @@ export default function VentaForm() {
                         )}
                     </div>
 
-                    {/* Cliente ID (readonly visual para confirmar selección) */}
+                    {/* Cliente ID */}
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Cliente (ID) *</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Cliente (ID) *
+                        </label>
                         <input
                             name="cliente_id"
                             value={form.cliente_id}
@@ -364,9 +400,11 @@ export default function VentaForm() {
                         />
                     </div>
 
-                    {/* Cliente nombre editable por si necesitás ajustar rótulo */}
+                    {/* Cliente nombre */}
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Cliente (Nombre y apellido) *</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Cliente (Nombre y apellido) *
+                        </label>
                         <input
                             name="cliente_nombre"
                             value={form.cliente_nombre}
@@ -378,7 +416,9 @@ export default function VentaForm() {
                     </div>
 
                     <div className="md:col-span-1">
-                        <label className="block text-xs font-medium text-gray-700">CUIT/CUIL / DNI</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            CUIT/CUIL / DNI
+                        </label>
                         <input
                             name="doc_cliente"
                             value={form.doc_cliente}
@@ -391,8 +431,12 @@ export default function VentaForm() {
 
                 {/* Sección: Desglose impositivo */}
                 <div className="border-y border-gray-200 p-4 bg-gray-50/60">
-                    <h2 className="text-sm font-semibold text-gray-800">Desglose impositivo (opcional)</h2>
-                    <p className="text-xs text-gray-500">Podés detallar neto, IVA y retenciones. Si no aplica, dejá en blanco.</p>
+                    <h2 className="text-sm font-semibold text-gray-800">
+                        Desglose impositivo
+                    </h2>
+                    <p className="text-xs text-gray-500">
+                        El total se calculará automáticamente como la suma de estos conceptos.
+                    </p>
                 </div>
 
                 <div className="p-4 grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -419,7 +463,9 @@ export default function VentaForm() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Ret. Ganancias</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Ret. Ganancias
+                        </label>
                         <input
                             name="ret_gan"
                             value={form.ret_gan}
@@ -430,7 +476,9 @@ export default function VentaForm() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Ret. IVA</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Ret. IVA
+                        </label>
                         <input
                             name="ret_iva"
                             value={form.ret_iva}
@@ -441,7 +489,9 @@ export default function VentaForm() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Ret. IIBB Tuc</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Ret. IIBB Tuc
+                        </label>
                         <input
                             name="ret_iibb_tuc"
                             value={form.ret_iibb_tuc}
@@ -457,26 +507,31 @@ export default function VentaForm() {
                 <div className="border-y border-gray-200 p-4 bg-gray-50/60">
                     <h2 className="text-sm font-semibold text-gray-800">Pago</h2>
                     <p className="text-xs text-gray-500">
-                        Importe total y forma de pago. Este formulario es solo para ventas normales (no financiadas).
+                        El importe total se calcula automáticamente desde el desglose.
                     </p>
                 </div>
 
                 <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Total *</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Total *
+                        </label>
                         <input
                             name="total"
                             value={form.total}
-                            onChange={onChange}
+                            readOnly
                             inputMode="decimal"
                             placeholder="0,00"
-                            required
-                            className={MONEY_INPUT}
+                            className={MONEY_INPUT + ' bg-gray-50 cursor-not-allowed'}
                         />
-                        <p className="mt-1 text-[11px] text-gray-500">Ingresá el importe final a cobrar.</p>
+                        <p className="mt-1 text-[11px] text-gray-500">
+                            Se calcula automáticamente como suma de neto + IVA + retenciones.
+                        </p>
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Forma de pago</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Forma de pago
+                        </label>
                         <select
                             name="forma_pago_id"
                             value={form.forma_pago_id}
@@ -491,38 +546,47 @@ export default function VentaForm() {
                             ))}
                         </select>
                     </div>
-                    <div className="flex items-center gap-2 pt-6 md:pt-0">
-                        <input
-                            id="bonificacion"
-                            type="checkbox"
-                            name="bonificacion"
-                            checked={form.bonificacion}
-                            onChange={onChange}
-                            className="h-4 w-4 rounded border border-gray-400 text-blue-600 focus:ring-1 focus:ring-blue-500"
-                        />
-                        <label htmlFor="bonificacion" className="text-sm text-gray-700">Bonificación</label>
-                    </div>
                 </div>
 
                 {/* Sección: Extras */}
                 <div className="border-y border-gray-200 p-4 bg-gray-50/60">
                     <h2 className="text-sm font-semibold text-gray-800">Observaciones</h2>
-                    <p className="text-xs text-gray-500">Datos complementarios de la venta (opcional).</p>
+                    <p className="text-xs text-gray-500">
+                        Datos complementarios de la venta (opcional).
+                    </p>
                 </div>
 
-                <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-1">
-                        <label className="block text-xs font-medium text-gray-700">Vendedor</label>
-                        <input
-                            name="vendedor"
-                            value={form.vendedor}
-                            onChange={onChange}
-                            placeholder="Opcional"
-                            className={INPUT_CLS}
-                        />
+                <div className="p-4 space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="md:col-span-2">
+                            <label className="block text-xs font-medium text-gray-700">
+                                Detalle del producto vendido
+                            </label>
+                            <input
+                                name="detalle_producto"
+                                value={form.detalle_producto}
+                                onChange={onChange}
+                                placeholder="Ej: Celular Motorola G86"
+                                className={INPUT_CLS}
+                            />
+                        </div>
+                        <div className="md:col-span-1">
+                            <label className="block text-xs font-medium text-gray-700">
+                                Vendedor
+                            </label>
+                            <input
+                                name="vendedor"
+                                value={form.vendedor}
+                                onChange={onChange}
+                                placeholder="Opcional"
+                                className={INPUT_CLS}
+                            />
+                        </div>
                     </div>
-                    <div className="md:col-span-2">
-                        <label className="block text-xs font-medium text-gray-700">Observación</label>
+                    <div>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Observación
+                        </label>
                         <textarea
                             name="observacion"
                             value={form.observacion}

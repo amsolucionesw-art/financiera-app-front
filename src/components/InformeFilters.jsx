@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
+import Swal from 'sweetalert2';
 import { defaultFilters } from '../hooks/useInformeData';
 import {
   obtenerCobradoresConZonas,
@@ -65,7 +66,52 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
 
   const applyFilters = (values) => {
     const params = { ...values };
+    const tipoActual = params.tipo;
 
+    // ───────────────── Validación de rango de fechas (solo cuotas) ─────────────────
+    if (
+      tipoActual === 'cuotas' &&
+      values.desde &&
+      values.hasta &&
+      !values.hoy
+    ) {
+      if (values.desde > values.hasta) {
+        Swal.fire(
+          'Rango de fechas inválido',
+          'La fecha "Desde" no puede ser mayor que "Hasta".',
+          'warning'
+        );
+        return;
+      }
+    }
+
+    // ───────────────── Limpieza según tipo de informe ─────────────────
+    if (tipoActual === 'clientes') {
+      // En clientes no aplican estos filtros
+      delete params.estadoCredito;
+      delete params.estadoCuota;
+      delete params.formaPagoId;
+      delete params.hoy;
+      delete params.desde;
+      delete params.hasta;
+      delete params.modalidad;
+    } else if (tipoActual === 'creditos') {
+      // En créditos no hay cuotas ni fechas de vencimiento directas ni forma de pago
+      delete params.estadoCuota;
+      delete params.formaPagoId;
+      delete params.hoy;
+      delete params.desde;
+      delete params.hasta;
+      // modalidad y estadoCredito sí aplican
+    } else if (tipoActual === 'cuotas') {
+      // En cuotas no tiene sentido "con créditos pendientes" ni estado de crédito
+      delete params.conCreditosPendientes;
+      delete params.estadoCredito;
+      // Modalidad se filtra a nivel crédito, aquí no se usa directamente
+      delete params.modalidad;
+    }
+
+    // ───────────────── Limpieza de campos vacíos / falsy ─────────────────
     if (!params.conCreditosPendientes) delete params.conCreditosPendientes;
     if (!params.hoy) delete params.hoy;
     if (!params.clienteId) delete params.clienteId;
@@ -77,6 +123,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
     if (!params.q) delete params.q;
     if (!params.zonaId) delete params.zonaId;
 
+    // Manejo consistente de fechas según el tipo de informe
     if (!showRangoFechas) {
       delete params.desde;
       delete params.hasta;
@@ -97,8 +144,8 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
   const qPlaceholder = useMemo(
     () =>
       tipo === 'creditos'
-        ? 'Buscar cliente por nombre/apellido…'
-        : 'Buscar por nombre/apellido…',
+        ? 'Nombre, apellido, DNI o #crédito…'
+        : 'Nombre, apellido, DNI o #crédito/#cuota…',
     [tipo]
   );
 
@@ -183,7 +230,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
         </div>
       )}
 
-      {/* Búsqueda libre por cliente */}
+      {/* Búsqueda libre por cliente / crédito */}
       {showSearchQ && (
         <div className={groupBase}>
           <label className={labelBase}>Búsqueda</label>
@@ -326,7 +373,11 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
                   type="date"
                   className={inputBase}
                   disabled={!!hoy}
-                  title={hoy ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"' : ''}
+                  title={
+                    hoy
+                      ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"'
+                      : ''
+                  }
                 />
               )}
             />
@@ -342,7 +393,11 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
                   type="date"
                   className={inputBase}
                   disabled={!!hoy}
-                  title={hoy ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"' : ''}
+                  title={
+                    hoy
+                      ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"'
+                      : ''
+                  }
                 />
               )}
             />

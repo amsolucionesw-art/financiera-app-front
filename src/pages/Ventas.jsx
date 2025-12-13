@@ -16,14 +16,14 @@ import {
 } from 'lucide-react';
 import { exportToCSV, exportContableXLSX } from '../utils/exporters';
 
-// YYYY-MM-DD en UTC para evitar derivas
+// YYYY-MM-DD en horario local (para alinear con backend y evitar saltos de día)
 const toYMD = (d) => {
     if (!d) return '';
     const dt = d instanceof Date ? d : new Date(d);
     if (Number.isNaN(dt.getTime())) return '';
-    const yyyy = dt.getUTCFullYear();
-    const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(dt.getUTCDate()).padStart(2, '0');
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
 };
 
@@ -50,6 +50,22 @@ const niceTipo = (s) => {
     if (t === 'quincenal') return 'Quincenal';
     if (t === 'mensual') return 'Mensual';
     return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
+/**
+ * Determina si una venta es financiada:
+ * - Prefiere el flag backend `es_venta_financiada` (bool / 0|1 / "true"/"1")
+ * - Si no viene, usa heuristic: capital > 0 && cuotas > 1
+ */
+const esVentaFinanciada = (r) => {
+    if (r?.es_venta_financiada !== undefined && r.es_venta_financiada !== null) {
+        const val = r.es_venta_financiada;
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'number') return val === 1;
+        const s = String(val).trim().toLowerCase();
+        return s === '1' || s === 'true' || s === 't';
+    }
+    return Number(r?.capital || 0) > 0 && Number(r?.cuotas || 0) > 1;
 };
 
 export default function Ventas() {
@@ -144,31 +160,35 @@ export default function Ventas() {
         setQ('');
     };
 
-    // Exportación CSV (sin forma de pago)
+    // Exportación CSV (ahora con bandera de financiada y detalle producto)
     const exportarCSV = () => {
         const archivo = `ventas-${desde || ''}_a_${hasta || ''}.csv`;
-        const rowsCSV = (rows || []).map((r) => ({
-            'FECHA IMPUTACION': r.fecha_imputacion || '',
-            'N° DE COMP': r.numero_comprobante || '',
-            'NOMBRE Y APELLIDO': r.cliente_nombre || '',
-            'CUIT-CUIL/ DNI': r.doc_cliente || '',
-            'NETO': Number(r.neto || 0).toFixed(2).replace('.', ','),
-            'IVA': Number(r.iva || 0).toFixed(2).replace('.', ','),
-            'RET GAN': Number(r.ret_gan || 0).toFixed(2).replace('.', ','),
-            'RETIVA': Number(r.ret_iva || 0).toFixed(2).replace('.', ','),
-            'RET IIBB TUC': Number(r.ret_iibb_tuc || 0).toFixed(2).replace('.', ','),
-            capital: Number(r.capital || 0).toFixed(2).replace('.', ','),
-            interes: Number(r.interes || 0).toFixed(2).replace('.', ','),
-            cuotas: Number(r.cuotas || 0),
-            tipo_credito: r.tipo_credito || '',
-            credito_id: r.credito_id ?? '',
-            TOTAL: Number(r.total || 0).toFixed(2).replace('.', ','),
-            'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
-            'BONIFICACION (FALSO / VERD)': r.bonificacion ? 'VERDADERO' : 'FALSO',
-            VENDEDOR: r.vendedor || '',
-            MES: r.mes ?? '',
-            AÑO: r.anio ?? ''
-        }));
+        const rowsCSV = (rows || []).map((r) => {
+            const financiada = esVentaFinanciada(r);
+            return {
+                'FECHA IMPUTACION': r.fecha_imputacion || '',
+                'N° DE COMP': r.numero_comprobante || '',
+                'NOMBRE Y APELLIDO': r.cliente_nombre || '',
+                'CUIT-CUIL/ DNI': r.doc_cliente || '',
+                'NETO': Number(r.neto || 0).toFixed(2).replace('.', ','),
+                'IVA': Number(r.iva || 0).toFixed(2).replace('.', ','),
+                'RET GAN': Number(r.ret_gan || 0).toFixed(2).replace('.', ','),
+                'RETIVA': Number(r.ret_iva || 0).toFixed(2).replace('.', ','),
+                'RET IIBB TUC': Number(r.ret_iibb_tuc || 0).toFixed(2).replace('.', ','),
+                capital: Number(r.capital || 0).toFixed(2).replace('.', ','),
+                interes: Number(r.interes || 0).toFixed(2).replace('.', ','),
+                cuotas: Number(r.cuotas || 0),
+                tipo_credito: r.tipo_credito || '',
+                credito_id: r.credito_id ?? '',
+                TOTAL: Number(r.total || 0).toFixed(2).replace('.', ','),
+                'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
+                VENDEDOR: r.vendedor || '',
+                MES: r.mes ?? '',
+                AÑO: r.anio ?? '',
+                'VENTA FINANCIADA': financiada ? 'SI' : 'NO',
+                'DETALLE PRODUCTO': r.detalle_producto || ''
+            };
+        });
 
         exportToCSV(archivo, rowsCSV, [
             'FECHA IMPUTACION',
@@ -187,39 +207,47 @@ export default function Ventas() {
             'credito_id',
             'TOTAL',
             'FECHA FIN DE FINANCIACION',
-            'BONIFICACION (FALSO / VERD)',
             'VENDEDOR',
             'MES',
-            'AÑO'
+            'AÑO',
+            'VENTA FINANCIADA',
+            'DETALLE PRODUCTO'
         ]);
     };
 
-    // Exportación Excel (XLSX) sin forma de pago
+    // Exportación Excel (XLSX) ahora con financiada y detalle producto
     const exportarXLSX = async () => {
-        const data = (rows || []).map((r) => ({
-            'FECHA IMPUTACION': r.fecha_imputacion || '',
-            'N° DE COMP': r.numero_comprobante || '',
-            'NOMBRE Y APELLIDO': r.cliente_nombre || '',
-            'CUIT-CUIL/ DNI': r.doc_cliente || '',
-            NETO: Number(r.neto || 0),
-            IVA: Number(r.iva || 0),
-            'RET GAN': Number(r.ret_gan || 0),
-            RETIVA: Number(r.ret_iva || 0),
-            'RET IIBB TUC': Number(r.ret_iibb_tuc || 0),
-            capital: Number(r.capital || 0),
-            interes: Number(r.interes || 0),
-            cuotas: Number(r.cuotas || 0),
-            tipo_credito: r.tipo_credito || '',
-            credito_id: r.credito_id ?? '',
-            TOTAL: Number(r.total || 0),
-            'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
-            'BONIFICACION (FALSO / VERD)': r.bonificacion ? 'VERDADERO' : 'FALSO',
-            VENDEDOR: r.vendedor || '',
-            MES: r.mes ?? '',
-            AÑO: r.anio ?? ''
-        }));
+        const data = (rows || []).map((r) => {
+            const financiada = esVentaFinanciada(r);
+            return {
+                'FECHA IMPUTACION': r.fecha_imputacion || '',
+                'N° DE COMP': r.numero_comprobante || '',
+                'NOMBRE Y APELLIDO': r.cliente_nombre || '',
+                'CUIT-CUIL/ DNI': r.doc_cliente || '',
+                NETO: Number(r.neto || 0),
+                IVA: Number(r.iva || 0),
+                'RET GAN': Number(r.ret_gan || 0),
+                RETIVA: Number(r.ret_iva || 0),
+                'RET IIBB TUC': Number(r.ret_iibb_tuc || 0),
+                capital: Number(r.capital || 0),
+                interes: Number(r.interes || 0),
+                cuotas: Number(r.cuotas || 0),
+                tipo_credito: r.tipo_credito || '',
+                credito_id: r.credito_id ?? '',
+                TOTAL: Number(r.total || 0),
+                'FECHA FIN DE FINANCIACION': r.fecha_fin || '',
+                VENDEDOR: r.vendedor || '',
+                MES: r.mes ?? '',
+                AÑO: r.anio ?? '',
+                venta_financiada: financiada,
+                detalle_producto: r.detalle_producto || ''
+            };
+        });
 
-        await exportContableXLSX({ ventas: data }, `ventas-${desde || ''}_a_${hasta || ''}.xlsx`);
+        await exportContableXLSX(
+            { ventas: data },
+            `ventas-${desde || ''}_a_${hasta || ''}.xlsx`
+        );
     };
 
     return (
@@ -277,9 +305,14 @@ export default function Ventas() {
 
             {/* Filtros */}
             <div className="rounded-lg border border-gray-200 bg-white p-4 mb-4">
-                <form className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end" onSubmit={onSubmitFiltros}>
+                <form
+                    className="grid grid-cols-1 md:grid-cols-7 gap-3 items-end"
+                    onSubmit={onSubmitFiltros}
+                >
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Desde</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Desde
+                        </label>
                         <input
                             type="date"
                             value={desde}
@@ -288,7 +321,9 @@ export default function Ventas() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Hasta</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Hasta
+                        </label>
                         <input
                             type="date"
                             value={hasta}
@@ -297,7 +332,9 @@ export default function Ventas() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Mes</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Mes
+                        </label>
                         <input
                             type="number"
                             min={1}
@@ -309,7 +346,9 @@ export default function Ventas() {
                         />
                     </div>
                     <div>
-                        <label className="block text-xs font-medium text-gray-700">Año</label>
+                        <label className="block text-xs font-medium text-gray-700">
+                            Año
+                        </label>
                         <input
                             type="number"
                             min={2000}
@@ -371,9 +410,8 @@ export default function Ventas() {
                     </div>
                 )}
 
-                {rows.map((r, idx) => {
-                    const tieneFinanciacion =
-                        Number(r.capital || 0) > 0 && Number(r.cuotas || 0) > 1;
+                {rows.map((r) => {
+                    const financiada = esVentaFinanciada(r);
                     const labelTipo = niceTipo(r.tipo_credito);
 
                     return (
@@ -383,10 +421,14 @@ export default function Ventas() {
                         >
                             <div className="flex items-start justify-between">
                                 <div className="space-y-0.5">
-                                    <div className="text-xs text-gray-500">Fecha imputación</div>
-                                    <div className="font-medium">{r.fecha_imputacion}</div>
+                                    <div className="text-xs text-gray-500">
+                                        Fecha imputación
+                                    </div>
+                                    <div className="font-medium">
+                                        {r.fecha_imputacion}
+                                    </div>
                                 </div>
-                                {tieneFinanciacion && (
+                                {financiada && (
                                     <span className="text-[11px] rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
                                         Financiada
                                     </span>
@@ -394,7 +436,9 @@ export default function Ventas() {
                             </div>
 
                             <div className="mt-2">
-                                <div className="text-xs text-gray-500">N° Comprobante</div>
+                                <div className="text-xs text-gray-500">
+                                    N° Comprobante
+                                </div>
                                 <div className="font-mono text-sm">
                                     {r.numero_comprobante || (
                                         <span className="text-gray-400">—</span>
@@ -404,40 +448,55 @@ export default function Ventas() {
 
                             <div className="mt-2">
                                 <div className="text-xs text-gray-500">Cliente</div>
-                                <div className="font-medium">{r.cliente_nombre}</div>
+                                <div className="font-medium">
+                                    {r.cliente_nombre}
+                                </div>
                                 <div className="text-xs text-gray-500">
                                     {r.doc_cliente || '-'}
                                 </div>
+                                {r.detalle_producto && (
+                                    <div className="mt-1 text-xs text-gray-600">
+                                        Detalle: {r.detalle_producto}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="mt-3 grid grid-cols-3 gap-2">
                                 <div>
-                                    <div className="text-[11px] text-gray-500">Capital</div>
+                                    <div className="text-[11px] text-gray-500">
+                                        Capital
+                                    </div>
                                     <div className="text-sm font-semibold text-right">
                                         {fmtNum(r.capital)}
                                     </div>
                                 </div>
                                 <div>
-                                    <div className="text-[11px] text-gray-500">Interés</div>
+                                    <div className="text-[11px] text-gray-500">
+                                        Interés
+                                    </div>
                                     <div className="text-sm font-semibold text-right">
                                         {fmtNum(r.interes)}
                                     </div>
                                 </div>
                                 <div>
-                                    <div className="text-[11px] text-gray-500">Total</div>
+                                    <div className="text-[11px] text-gray-500">
+                                        Total
+                                    </div>
                                     <div className="text-sm font-semibold text-right">
                                         {fmtNum(r.total)}
                                     </div>
                                 </div>
                             </div>
 
-                            {tieneFinanciacion ? (
+                            {financiada ? (
                                 <div className="mt-2 text-xs text-gray-700">
                                     {labelTipo
-                                        ? `${labelTipo} · ${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
-                                        }`
-                                        : `${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
-                                        }`}
+                                        ? `${labelTipo} · ${r.cuotas} cuota${
+                                              Number(r.cuotas) === 1 ? '' : 's'
+                                          }`
+                                        : `${r.cuotas} cuota${
+                                              Number(r.cuotas) === 1 ? '' : 's'
+                                          }`}
                                 </div>
                             ) : (
                                 <div className="mt-2 text-xs text-gray-400">
@@ -447,7 +506,9 @@ export default function Ventas() {
 
                             <div className="text-xs text-gray-500 mt-1">
                                 Vendedor:{' '}
-                                <span className="text-gray-800">{r.vendedor || '-'}</span>
+                                <span className="text-gray-800">
+                                    {r.vendedor || '-'}
+                                </span>
                             </div>
 
                             <div className="mt-2 text-xs text-gray-500">
@@ -486,22 +547,30 @@ export default function Ventas() {
 
                 {rows.length > 0 && (
                     <div className="rounded-lg border border-gray-200 bg-white p-3">
-                        <div className="text-sm font-medium text-gray-700">Totales</div>
+                        <div className="text-sm font-medium text-gray-700">
+                            Totales
+                        </div>
                         <div className="mt-2 grid grid-cols-3 gap-2">
                             <div>
-                                <div className="text-[11px] text-gray-500">Capital</div>
+                                <div className="text-[11px] text-gray-500">
+                                    Capital
+                                </div>
                                 <div className="text-sm font-semibold text-right">
                                     {fmtNum(totals.capital)}
                                 </div>
                             </div>
                             <div>
-                                <div className="text-[11px] text-gray-500">Interés</div>
+                                <div className="text-[11px] text-gray-500">
+                                    Interés
+                                </div>
                                 <div className="text-sm font-semibold text-right">
                                     {fmtNum(totals.interes)}
                                 </div>
                             </div>
                             <div>
-                                <div className="text-[11px] text-gray-500">Total</div>
+                                <div className="text-[11px] text-gray-500">
+                                    Total
+                                </div>
                                 <div className="text-sm font-semibold text-right">
                                     {fmtNum(totals.total)}
                                 </div>
@@ -522,16 +591,36 @@ export default function Ventas() {
                 <table className="min-w-full text-sm">
                     <thead className="bg-gray-50 text-gray-700">
                         <tr>
-                            <th className="px-3 py-2 text-left font-medium">Fecha imputación</th>
-                            <th className="px-3 py-2 text-left font-medium">N° Comp.</th>
-                            <th className="px-3 py-2 text-left font-medium">Cliente</th>
-                            <th className="px-3 py-2 text-right font-medium">Capital</th>
-                            <th className="px-3 py-2 text-right font-medium">Interés</th>
-                            <th className="px-3 py-2 text-left font-medium">Financiación</th>
-                            <th className="px-3 py-2 text-right font-medium">Total</th>
-                            <th className="px-3 py-2 text-left font-medium">Vendedor</th>
-                            <th className="px-3 py-2 text-left font-medium">Crédito</th>
-                            <th className="px-3 py-2 text-right font-medium w-48">Acciones</th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                Fecha imputación
+                            </th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                N° Comp.
+                            </th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                Cliente
+                            </th>
+                            <th className="px-3 py-2 text-right font-medium">
+                                Capital
+                            </th>
+                            <th className="px-3 py-2 text-right font-medium">
+                                Interés
+                            </th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                Financiación
+                            </th>
+                            <th className="px-3 py-2 text-right font-medium">
+                                Total
+                            </th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                Vendedor
+                            </th>
+                            <th className="px-3 py-2 text-left font-medium">
+                                Crédito
+                            </th>
+                            <th className="px-3 py-2 text-right font-medium w-64">
+                                Acciones
+                            </th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -546,9 +635,7 @@ export default function Ventas() {
                             </tr>
                         )}
                         {rows.map((r, idx) => {
-                            const tieneFinanciacion =
-                                Number(r.capital || 0) > 0 &&
-                                Number(r.cuotas || 0) > 1;
+                            const financiada = esVentaFinanciada(r);
                             const labelTipo = niceTipo(r.tipo_credito);
 
                             return (
@@ -560,7 +647,9 @@ export default function Ventas() {
                                             : 'bg-gray-50 hover:bg-gray-100'
                                     }
                                 >
-                                    <td className="px-3 py-2">{r.fecha_imputacion}</td>
+                                    <td className="px-3 py-2">
+                                        {r.fecha_imputacion}
+                                    </td>
                                     <td className="px-3 py-2">
                                         {r.numero_comprobante ? (
                                             <span className="inline-flex items-center rounded border border-gray-300 bg-white px-2 py-0.5 font-mono text-[12px] text-gray-800">
@@ -571,16 +660,23 @@ export default function Ventas() {
                                         )}
                                     </td>
                                     <td className="px-3 py-2">
-                                        <div className="text-gray-900 flex items-center gap-2">
-                                            {r.cliente_nombre}
-                                            {tieneFinanciacion && (
-                                                <span className="text-xs rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
-                                                    Financiada
-                                                </span>
+                                        <div className="text-gray-900 flex flex-col gap-0.5">
+                                            <div className="flex items-center gap-2">
+                                                <span>{r.cliente_nombre}</span>
+                                                {financiada && (
+                                                    <span className="text-xs rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5">
+                                                        Financiada
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="text-gray-500 text-xs">
+                                                {r.doc_cliente || '-'}
+                                            </div>
+                                            {r.detalle_producto && (
+                                                <div className="text-xs text-gray-600">
+                                                    Detalle: {r.detalle_producto}
+                                                </div>
                                             )}
-                                        </div>
-                                        <div className="text-gray-500 text-xs">
-                                            {r.doc_cliente || '-'}
                                         </div>
                                     </td>
                                     <td className="px-3 py-2 text-right">
@@ -590,12 +686,18 @@ export default function Ventas() {
                                         {fmtNum(r.interes)}
                                     </td>
                                     <td className="px-3 py-2">
-                                        {tieneFinanciacion
+                                        {financiada
                                             ? labelTipo
-                                                ? `${labelTipo} · ${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
-                                                }`
-                                                : `${r.cuotas} cuota${Number(r.cuotas) === 1 ? '' : 's'
-                                                }`
+                                                ? `${labelTipo} · ${r.cuotas} cuota${
+                                                      Number(r.cuotas) === 1
+                                                          ? ''
+                                                          : 's'
+                                                  }`
+                                                : `${r.cuotas} cuota${
+                                                      Number(r.cuotas) === 1
+                                                          ? ''
+                                                          : 's'
+                                                  }`
                                             : '-'}
                                     </td>
                                     <td className="px-3 py-2 text-right font-medium">
@@ -667,4 +769,3 @@ export default function Ventas() {
         </div>
     );
 }
-

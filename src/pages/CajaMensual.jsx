@@ -68,11 +68,55 @@ const REF_LABELS = CATEGORIAS_FILTRO.reduce((acc, c) => {
     acc[c.value] = c.label;
     return acc;
 }, {});
-const referenciaTipoLabel = (v) => {
+
+// Admite flag de venta financiada para el texto de categoría
+const referenciaTipoLabel = (v, esVentaFinanciada = false) => {
     if (v == null) return 'Sin categoría';
     const key = String(v).toLowerCase();
     if (key === 'null') return 'Sin categoría';
+    if (key === 'venta') {
+        return esVentaFinanciada ? 'Venta financiada' : (REF_LABELS['venta'] || 'Venta');
+    }
     return REF_LABELS[key] || v;
+};
+
+// Etiqueta para el Ref. ID, alineado con CajaDiaria
+const referenciaIdLabel = (refTipo, refId) => {
+    if (refId == null || refId === '') return '—';
+    const id = String(refId);
+    const t = String(refTipo || '').toLowerCase();
+
+    if (t === 'venta') return `Venta #${id}`;
+    if (t === 'recibo') return `Recibo #${id}`;
+    if (t === 'credito') return `Crédito #${id}`;
+    if (t === 'gasto') return `Gasto #${id}`;
+    if (t === 'compra') return `Compra #${id}`;
+    if (t === 'manual') return `Ref. #${id}`;
+
+    return `#${id}`;
+};
+
+// Monto con signo según tipo (solo vista)
+const montoConSigno = (monto, tipo) => {
+    const n = Number(monto || 0);
+    const abs = Math.abs(n);
+    const base = abs.toLocaleString('es-AR', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+
+    const t = String(tipo || '').toLowerCase();
+    const esNegativo = t === 'egreso' || t === 'cierre';
+
+    return `${esNegativo ? '-' : '+'} ${base}`;
+};
+
+// Colores para el monto según tipo
+const montoTextClass = (tipo) => {
+    const t = String(tipo || '').toLowerCase();
+    if (t === 'egreso' || t === 'cierre') return 'text-red-700';
+    if (t === 'ingreso' || t === 'apertura' || t === 'ajuste') return 'text-emerald-700';
+    return 'text-slate-800';
 };
 
 /* ───────────────── Modal de detalle ───────────────── */
@@ -228,16 +272,14 @@ const Mensual = () => {
     const cargarMovimientos = useCallback(async () => {
         setLoading(true);
         try {
-            // ⚠️ Comportamiento:
-            // - Si mostrarMesCompleto = true → se consulta el mes completo (desde/hasta).
-            // - Si mostrarMesCompleto = false → NO enviamos fechas → backend devuelve últimos 3 días.
+            // - Si mostrarMesCompleto = true → consulta el mes completo (desde/hasta).
+            // - Si mostrarMesCompleto = false → sin fechas → backend devuelve últimos 3 días.
             const params = {};
             if (mostrarMesCompleto) {
                 params.desde = firstDay(anio, mes);
                 params.hasta = lastDay(anio, mes);
                 params.limit = 1000;
             } else {
-                // sin fechas; opcionalmente limit “defensivo”
                 params.limit = 200;
             }
 
@@ -249,7 +291,7 @@ const Mensual = () => {
 
             const data = await obtenerMovimientos(params);
             setMovs(Array.isArray(data) ? data : []);
-            setCurrentPage(1); // reset paginación al recargar
+            setCurrentPage(1);
         } catch (err) {
             console.error('Error movimientos mes', err);
             Swal.fire('Error', err.message || 'No se pudieron cargar movimientos', 'error');
@@ -282,7 +324,7 @@ const Mensual = () => {
 
     // Detalle por tipo (si no viene del backend, se arma desde porFormaPago)
     const detallesPorTipo = useMemo(() => {
-        const base = resumen?.porTipo || null; // esperado: { ingreso:[{nombre,total}], egreso:[...], ... }
+        const base = resumen?.porTipo || null;
         if (base) return base;
         const out = { ingreso: [], egreso: [], ajuste: [], apertura: [], cierre: [] };
         const pf = resumen?.porFormaPago || {};
@@ -365,8 +407,9 @@ const Mensual = () => {
                 m.usuario?.nombre_completo ||
                 m.usuario?.nombre_usuario ||
                 (m.usuario_id ? `#${m.usuario_id}` : ''),
-            categoria: referenciaTipoLabel(m.referencia_tipo),
-            referencia_id: m.referencia_tipo ? (m.referencia_id ?? '') : '',
+            categoria: referenciaTipoLabel(m.referencia_tipo, m.es_venta_financiada),
+            ref_tipo: m.referencia_tipo ?? '',
+            ref_id: m.referencia_id ?? '',
             monto: Number(m.monto || 0).toFixed(2).replace('.', ','),
         }));
         const label = `${anio}-${String(mes).padStart(2, '0')}`;
@@ -378,7 +421,8 @@ const Mensual = () => {
             'forma_pago',
             'usuario',
             'categoria',
-            'referencia_id',
+            'ref_tipo',
+            'ref_id',
             'monto',
         ]);
     };
@@ -470,7 +514,7 @@ const Mensual = () => {
                     </p>
                 </div>
 
-                <div className="flex flex-wrap items-end gap-2">
+                <div className="flex flex-wrap items_END gap-2">
                     <div>
                         <label className="mb-1 block text-xs font-semibold text-slate-600">Año</label>
                         <input
@@ -693,7 +737,7 @@ const Mensual = () => {
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
                 <div className="overflow-x-auto">
                     <table className="min-w-full text-sm">
-                        <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
+                        <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-600">
                             <tr>
                                 <th className="px-4 py-2">Fecha</th>
                                 <th className="px-4 py-2">Hora</th>
@@ -701,8 +745,8 @@ const Mensual = () => {
                                 <th className="px-4 py-2">Concepto</th>
                                 <th className="px-4 py-2">Forma de pago</th>
                                 <th className="px-4 py-2">Usuario</th>
+                                <th className="px-4 py-2">Ref. ID</th>
                                 <th className="px-4 py-2">Categoría</th>
-                                <th className="px-4 py-2">Referencia</th>
                                 <th className="px-4 py-2 text-right">Monto</th>
                             </tr>
                         </thead>
@@ -739,11 +783,15 @@ const Mensual = () => {
                                                 m.usuario?.nombre_usuario ||
                                                 (m.usuario_id ? `#${m.usuario_id}` : '—')}
                                         </td>
-                                        <td className="px-4 py-2">{referenciaTipoLabel(m.referencia_tipo)}</td>
                                         <td className="px-4 py-2">
-                                            {m.referencia_tipo ? `${m.referencia_id ?? ''}` : '—'}
+                                            {referenciaIdLabel(m.referencia_tipo, m.referencia_id)}
                                         </td>
-                                        <td className="px-4 py-2 text-right font-medium">{fmtARS(Number(m.monto))}</td>
+                                        <td className="px-4 py-2">
+                                            {referenciaTipoLabel(m.referencia_tipo, m.es_venta_financiada)}
+                                        </td>
+                                        <td className={`px-4 py-2 text-right font-medium ${montoTextClass(m.tipo)}`}>
+                                            {montoConSigno(m.monto, m.tipo)}
+                                        </td>
                                     </tr>
                                 ))
                             )}
@@ -762,7 +810,7 @@ const Mensual = () => {
                                 type="button"
                                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                                 disabled={currentPage === 1}
-                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg_WHITE"
                             >
                                 Anterior
                             </button>
@@ -773,7 +821,7 @@ const Mensual = () => {
                                 type="button"
                                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                                 disabled={currentPage === totalPages || movs.length === 0}
-                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white"
+                                className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg_WHITE"
                             >
                                 Siguiente
                             </button>
