@@ -19,7 +19,15 @@ export const defaultFilters = {
     desde: '',
     hasta: '',
     formaPagoId: '',
-    hoy: false
+    hoy: false,
+
+    // ✅ Selector del tipo de fecha para armar rango (solo créditos)
+    // Valores reales (modelo Credito):
+    //  - solicitud (fecha_solicitud)
+    //  - acreditacion (fecha_acreditacion)
+    //  - compromiso (fecha_compromiso_pago)
+    //  - acreditacion_compromiso (OR entre acreditacion y compromiso)
+    rangoFechaCredito: 'acreditacion_compromiso'
 };
 
 /* ---------- Helpers para columnas ---------- */
@@ -115,9 +123,6 @@ const prettyHeader = (key, tipo) => {
 /**
  * Decide si una columna debería marcarse como sumable (meta.sum)
  * para ayudar a InformeTable a decidir qué totales mostrar.
- *
- * OJO: esto solo es una sugerencia; InformeTable además aplica su propia
- * heurística y respeta meta.sum si está definido.
  */
 const shouldSumColumn = (key) => {
     if (!key) return false;
@@ -137,8 +142,20 @@ const shouldSumColumn = (key) => {
         return true;
     }
 
-    // Por defecto, no sumar (conservador)
     return false;
+};
+
+/* ---------- Normalizador de rangoFechaCredito (defensivo) ---------- */
+const normalizeRangoFechaCredito = (v) => {
+    const s = String(v || '').trim().toLowerCase();
+    if (s === 'solicitud') return 'solicitud';
+    if (s === 'acreditacion' || s === 'fecha_acreditacion') return 'acreditacion';
+    if (s === 'compromiso' || s === 'fecha_compromiso_pago') return 'compromiso';
+    if (s === 'acreditacion_compromiso' || s === 'acreditacion-o-compromiso' || s === 'acreditacion_compromiso_pago') {
+        return 'acreditacion_compromiso';
+    }
+    // si viene un valor viejo tipo "otorgamiento/actualizacion" u otro: fallback seguro
+    return 'acreditacion_compromiso';
 };
 
 /**
@@ -158,18 +175,32 @@ export const useInformeData = () => {
         setAppliedFilters(null);
     };
 
-    // Construcción de params para la API
+    // Construcción de params para la API (alineado al backend)
+    // - usa query.desde / query.hasta
+    // - soporta rangoFechaCredito (solo créditos)
     const apiParams = useMemo(() => {
         if (!appliedFilters) return {};
 
-        const { desde, hasta, hoy, ...rest } = appliedFilters;
+        const {
+            desde,
+            hasta,
+            hoy,
+            tipo,
+            rangoFechaCredito,
+            ...rest
+        } = appliedFilters;
 
         const params = {
             ...rest,
-            ...(desde || hasta
-                ? { fechaVencimiento: `${desde || ''},${hasta || ''}` }
-                : {}),
-            ...(hoy ? { hoy: true } : {})
+            tipo,
+            ...(desde ? { desde } : {}),
+            ...(hasta ? { hasta } : {}),
+            ...(hoy ? { hoy: true } : {}),
+
+            // ✅ Solo créditos: qué campo(s) usar para el rango (normalizado)
+            ...(tipo === 'creditos'
+                ? { rangoFechaCredito: normalizeRangoFechaCredito(rangoFechaCredito) }
+                : {})
         };
 
         // Eliminar claves vacías
@@ -190,7 +221,7 @@ export const useInformeData = () => {
         enabled: appliedFilters != null
     });
 
-    // Columnas para la tabla (con headers legibles y meta.sum / meta.format)
+    // Columnas para la tabla
     const columns = useMemo(() => {
         if (rawData.length === 0) return [];
 
@@ -201,7 +232,7 @@ export const useInformeData = () => {
             const meta = {};
             const kLower = String(key).toLowerCase();
 
-            // Definir formato "raw" para DNI / teléfonos (sin formateo numérico)
+            // Definir formato "raw" para DNI / teléfonos
             if (/(dni|documento|doc|cuil|cuit)/.test(kLower)) {
                 meta.format = 'raw';
             }
@@ -209,7 +240,6 @@ export const useInformeData = () => {
                 meta.format = 'raw';
             }
 
-            // Decidir si se debería sumar esta columna
             meta.sum = shouldSumColumn(key);
 
             return {

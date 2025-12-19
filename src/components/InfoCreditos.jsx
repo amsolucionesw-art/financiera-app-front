@@ -2645,6 +2645,7 @@ const InfoCreditos = ({ creditos = [], refetchCreditos }) => {
                                                     cuotas={c.cuotas}
                                                     interesCredito={c.interes}
                                                     refetch={refetchCreditos}
+                                                    creditoEstado={c.estado}
                                                 />
                                             )}
                                         </section>

@@ -12,7 +12,9 @@ const VTO_FICTICIO_LIBRE = '2099-12-31';
 const CuotasTabla = ({
     cuotas = [],
     interesCredito,
-    refetch = () => {}
+    refetch = () => {},
+    // ✅ NUEVO (opcional): si el contenedor (InfoCreditos) lo pasa, es lo más confiable
+    creditoEstado = null
 }) => {
     const [seleccionada, setSeleccionada] = useState(null);
     const [cuotaDetalle, setCuotaDetalle] = useState(null);
@@ -39,9 +41,23 @@ const CuotasTabla = ({
 
     // Detecta modalidad "libre" por vencimiento ficticio (existe al menos una)
     const esLibre = useMemo(
-        () => cuotas.some(q => String(q.fecha_vencimiento) === VTO_FICTICIO_LIBRE),
+        () => cuotas.some((q) => String(q.fecha_vencimiento) === VTO_FICTICIO_LIBRE),
         [cuotas]
     );
+
+    // ✅ Detectar si el CRÉDITO está refinanciado (por prop o por data embebida en cuotas)
+    const creditoRefinanciado = useMemo(() => {
+        const fromProp = String(creditoEstado ?? '').toLowerCase();
+
+        // Si viene en las cuotas como c.credito.estado o c.credito_estado, lo tomamos
+        const fromCuotas = cuotas.some((c) => {
+            const e1 = String(c?.credito?.estado ?? '').toLowerCase();
+            const e2 = String(c?.credito_estado ?? '').toLowerCase();
+            return e1 === 'refinanciado' || e2 === 'refinanciado';
+        });
+
+        return fromProp === 'refinanciado' || fromCuotas;
+    }, [creditoEstado, cuotas]);
 
     const filas = cuotas.map((c) => {
         const esVtoLibre = String(c.fecha_vencimiento) === VTO_FICTICIO_LIBRE;
@@ -66,16 +82,11 @@ const CuotasTabla = ({
         const pctWidth =
             c.estado === 'pagada'
                 ? 100
-                : Math.min(
-                      Math.max(base > 0 ? (pagado / base) * 100 : 0, 0),
-                      100
-                  );
+                : Math.min(Math.max(base > 0 ? (pagado / base) * 100 : 0, 0), 100);
         const pctText = c.estado === 'pagada' ? 100 : Math.round(pctWidth);
 
         const fechaVto =
-            c?.fecha_vencimiento && !esVtoLibre
-                ? parseISO(c.fecha_vencimiento)
-                : null;
+            c?.fecha_vencimiento && !esVtoLibre ? parseISO(c.fecha_vencimiento) : null;
 
         // Confiamos en el estado que manda backend
         const vencida = String(c.estado).toLowerCase() === 'vencida';
@@ -90,6 +101,13 @@ const CuotasTabla = ({
             const diffMs = hoy.getTime() - vtoCopia.getTime();
             diasRetraso = Math.max(Math.floor(diffMs / 86400000), 0);
         }
+
+        // ✅ Bloqueo por refinanciación (crédito o cuota)
+        const cuotaRefinanciada =
+            String(c?.estado ?? '').toLowerCase() === 'refinanciada' ||
+            String(c?.estado ?? '').toLowerCase() === 'refinanciado';
+
+        const bloqueadaPorRefi = creditoRefinanciado || cuotaRefinanciada;
 
         return (
             <tr
@@ -117,9 +135,7 @@ const CuotasTabla = ({
                 </td>
 
                 {/* Días de retraso (reemplaza Mora bruta) */}
-                <td className="px-4 py-2">
-                    {diasRetraso}
-                </td>
+                <td className="px-4 py-2">{diasRetraso}</td>
 
                 {/* Descuento sobre mora (en LIBRE no aplica, se muestra —) */}
                 <td className="px-4 py-2">
@@ -128,7 +144,7 @@ const CuotasTabla = ({
                             className="text-gray-400"
                             title="En crédito LIBRE el descuento no se persiste por cuota; solo puede bonificarse la mora del ciclo al liquidar."
                         >
-                            — 
+                            —{' '}
                         </span>
                     ) : (
                         <>
@@ -189,9 +205,7 @@ const CuotasTabla = ({
                                     style={{ width: `${pctWidth}%` }}
                                 />
                             </div>
-                            <span className="text-xs tabular-nums">
-                                {pctText}%
-                            </span>
+                            <span className="text-xs tabular-nums">{pctText}%</span>
                         </div>
                     </td>
                 )}
@@ -205,6 +219,13 @@ const CuotasTabla = ({
                                 title="Usá 'Abono parcial' o 'Liquidar crédito' en la tarjeta del crédito (arriba)."
                             >
                                 Acciones en la tarjeta
+                            </span>
+                        ) : bloqueadaPorRefi ? (
+                            <span
+                                className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200"
+                                title="Este crédito ya fue refinanciado. No se permite registrar pagos sobre sus cuotas anteriores."
+                            >
+                                Crédito refinanciado
                             </span>
                         ) : puedeImpactarPagos ? (
                             <button
@@ -250,10 +271,7 @@ const CuotasTabla = ({
                     <thead className="bg-gray-50 uppercase tracking-wider text-gray-600">
                         <tr>
                             {columnas.map((th) => (
-                                <th
-                                    key={th}
-                                    className="px-4 py-3 text-center font-semibold"
-                                >
+                                <th key={th} className="px-4 py-3 text-center font-semibold">
                                     {th}
                                 </th>
                             ))}
@@ -276,10 +294,7 @@ const CuotasTabla = ({
             )}
 
             {cuotaDetalle && (
-                <CuotaDetalleModal
-                    cuota={cuotaDetalle}
-                    onClose={() => setCuotaDetalle(null)}
-                />
+                <CuotaDetalleModal cuota={cuotaDetalle} onClose={() => setCuotaDetalle(null)} />
             )}
         </>
     );

@@ -5,6 +5,7 @@ import { X, CreditCard as IconCreditCard, Info as IconInfo } from 'lucide-react'
 import { useForm, Controller, useWatch } from 'react-hook-form';
 import Swal from 'sweetalert2';
 import { format, parseISO } from 'date-fns';
+import { jwtDecode } from 'jwt-decode';
 import {
     obtenerFormasDePago,
     obtenerPagosPorCuota,
@@ -22,6 +23,26 @@ const clamp = (n, min, max) => Math.min(Math.max(Number(n) || 0, min), max);
 const fmtAR = (n) =>
     Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+const getRolIdFromToken = () => {
+    try {
+        const raw = localStorage.getItem('token') || localStorage.getItem('authToken') || '';
+        if (!raw) return null;
+        const token = raw.replace(/^Bearer\s+/i, '');
+        const decoded = jwtDecode(token);
+        const rid = decoded?.rol_id ?? decoded?.rol ?? decoded?.role ?? null;
+        const n = Number(rid);
+        return Number.isFinite(n) ? n : null;
+    } catch {
+        return null;
+    }
+};
+
+const normalizeData = (resp) => {
+    if (!resp) return resp;
+    if (resp?.data !== undefined && (resp?.success === true || resp?.success === false)) return resp.data;
+    return resp;
+};
+
 const CuotaModal = ({ cuota, onClose, onSuccess }) => {
     const navigate = useNavigate();
 
@@ -31,6 +52,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
     const [cuotaSrv, setCuotaSrv] = useState(cuota);
     const [resumenLibre, setResumenLibre] = useState(null); // { saldo_capital, interes_pendiente_hoy, mora_pendiente_hoy, total_liquidacion_hoy, ciclo_actual, ... }
     const isMounted = useRef(true);
+
+    /* Rol */
+    const rolId = useMemo(() => getRolIdFromToken(), []);
+    const isSuperadmin = rolId === 0;
+    const isAdmin = rolId === 1;
 
     /* RHF */
     const {
@@ -42,7 +68,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
     } = useForm({
         defaultValues: {
             tipoPago: 'total',     // 'total' | 'parcial'
-            descuento: 0,          // % en LIBRE total, MONTO en NO-LIBRE (sobre mora)
+            descuento: 0,          // % en LIBRE total (solo superadmin), MONTO en NO-LIBRE (sobre mora)
             montoAbono: '',
             formaId: '',
             observacion: '',
@@ -67,15 +93,21 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
         isMounted.current = true;
         (async () => {
             try {
-                const [f, p, c] = await Promise.all([
+                const [fRaw, pRaw, cRaw] = await Promise.all([
                     obtenerFormasDePago(),
                     obtenerPagosPorCuota(cuota.id),
                     obtenerCuotaPorId(cuota.id)
                 ]);
+
                 if (!isMounted.current) return;
-                setFormas(f || []);
+
+                const f = normalizeData(fRaw);
+                const p = normalizeData(pRaw);
+                const c = normalizeData(cRaw);
+
+                setFormas(Array.isArray(f) ? f : []);
                 setPagos(Array.isArray(p) ? p : []);
-                setCuotaSrv(c);
+                setCuotaSrv(c || cuota);
 
                 reset({
                     tipoPago: 'total',
@@ -87,11 +119,12 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                 });
 
                 // Si es LIBRE, cargo resumen
-                const libre = c?.fecha_vencimiento === VTO_FICTICIO_LIBRE;
+                const libre = (c?.fecha_vencimiento === VTO_FICTICIO_LIBRE);
                 if (libre && c?.credito_id) {
                     try {
-                        const resumen = await obtenerResumenLibreCredito(c.credito_id);
+                        const resumenRaw = await obtenerResumenLibreCredito(c.credito_id);
                         if (!isMounted.current) return;
+                        const resumen = normalizeData(resumenRaw);
                         setResumenLibre(resumen || null);
                     } catch (e) {
                         console.warn('No se pudo obtener resumen libre:', e);
@@ -119,7 +152,7 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 
         const principalPendiente = Math.max(importeCuota - descAcum - pagadoAcum, 0);
 
-        // ⬇️ Ahora el descuento válido se limita a la MORA (no al principal)
+        // ⬇️ Descuento válido: limitado a la MORA (no al principal)
         const descValido = clamp(descuentoWatch, 0, moraAcum);
 
         // Neto total: (Mora - Descuento) + PrincipalPendiente
@@ -136,17 +169,20 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
         };
     }, [cuotaSrv, descuentoWatch]);
 
-    /* Derivados memoizados (LIBRE) — descuento % SOLO sobre mora del ciclo */
+    /* Derivados memoizados (LIBRE) — descuento % SOLO sobre mora del ciclo (solo superadmin) */
     const derivedLibre = useMemo(() => {
         const totalHoy = round2(resumenLibre?.total_liquidacion_hoy);
         const interesHoy = round2(resumenLibre?.interes_pendiente_hoy);
-        const moraHoy = round2(resumenLibre?.mora_pendiente_hoy);   // puede ser 0 si aún no venció compromiso
+        const moraHoy = round2(resumenLibre?.mora_pendiente_hoy);
         const saldoCapital = round2(resumenLibre?.saldo_capital);
 
-        const descPct = clamp(descuentoWatch, 0, 100);
+        // Regla UI alineada al back actual:
+        // - Admin (rol 1) NO bonifica en LIBRE (evita 403 del back).
+        // - Si moraHoy == 0, bonificación es irrelevante.
+        const pctInput = clamp(descuentoWatch, 0, 100);
+        const pctAplicable = (!isSuperadmin || moraHoy <= 0) ? 0 : pctInput;
 
-        // Neto = TotalHoy - (MoraHoy * %/100)
-        const descuentoEnPesos = round2(moraHoy * (descPct / 100));
+        const descuentoEnPesos = round2(moraHoy * (pctAplicable / 100));
         const netoTotalConDesc = round2(Math.max(totalHoy - descuentoEnPesos, 0));
 
         return {
@@ -154,11 +190,20 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
             interesHoy,
             moraHoy,
             saldoCapital,
-            descPct,
+            descPct: pctAplicable,
             descuentoEnPesos,
             netoTotalConDesc
         };
-    }, [resumenLibre, descuentoWatch]);
+    }, [resumenLibre, descuentoWatch, isSuperadmin]);
+
+    /* Ajustes automáticos de UI */
+    useEffect(() => {
+        // Si es LIBRE y NO es superadmin, forzamos descuento = 0 (evita intentos que el back rechaza)
+        if (isLibre && !isSuperadmin && Number(descuentoWatch || 0) !== 0) {
+            setValue('descuento', 0, { shouldValidate: true, shouldDirty: true });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isLibre, isSuperadmin, descuentoWatch]);
 
     /* Handlers adicionales LIBRE */
     useEffect(() => {
@@ -179,22 +224,48 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                 return;
             }
 
+            // Seguridad UX: si por algún motivo abren este modal con otro rol
+            if (rolId !== 0 && rolId !== 1) {
+                Swal.fire('Sin permiso', 'Tu usuario no tiene permisos para impactar pagos.', 'warning');
+                return;
+            }
+
+            // Helper: armamos payload “blindado” (nuevo contrato)
+            const buildPayloadDescuento = () => {
+                if (isLibre) {
+                    // LIBRE: descuento_mora = % (0..100) SOLO superadmin; admin = 0
+                    const pct = isSuperadmin ? clamp(Number(descuento || 0), 0, 100) : 0;
+                    return {
+                        descuento_scope: 'mora',
+                        descuento_mora: pct,
+                        // compat (por si algún service viejo aún mira "descuento"):
+                        descuento: pct
+                    };
+                }
+                // NO-LIBRE: descuento_mora = MONTO (0..mora)
+                const monto = derivedNoLibre.descValido;
+                return {
+                    descuento_scope: 'mora',
+                    descuento_mora: monto,
+                    descuento: monto
+                };
+            };
+
             // —— PAGO TOTAL —— //
             if (tipoPago === 'total') {
-                // LIBRE: descuento es % (aplica SOLO sobre mora del ciclo)
-                // NO-LIBRE: descuento es MONTO (aplica SOLO sobre mora)
-                const descEnviar = isLibre
-                    ? clamp(Number(descuento || 0), 0, 100)
-                    : derivedNoLibre.descValido;
-
-                const resp = await pagarCuota({
+                const payload = {
+                    // Compatibilidad: algunos services usan cuotaId y otros cuota_id
                     cuotaId: cuotaSrv.id,
+                    cuota_id: cuotaSrv.id,
                     forma_pago_id: Number(formaId),
                     observacion,
-                    descuento: descEnviar
-                });
+                    ...buildPayloadDescuento()
+                };
 
-                const recibo = resp?.recibo || resp?.data?.recibo;
+                const respRaw = await pagarCuota(payload);
+                const resp = normalizeData(respRaw);
+
+                const recibo = resp?.recibo || respRaw?.recibo || respRaw?.data?.recibo;
                 if (recibo?.numero_recibo) {
                     Swal.fire('¡Pago total registrado!', '', 'success');
                     navigate(`/recibo/${recibo.numero_recibo}`);
@@ -208,7 +279,6 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
             }
 
             // —— ABONO PARCIAL —— //
-            // LIBRE Mes 3: bloqueo desde UI por seguridad; el back igual lo rechaza.
             if (isLibre && bloquearParcialLibre) {
                 Swal.fire('Atención', 'En el 3er mes del crédito LIBRE no se permite abono parcial. Debe realizar pago total.', 'warning');
                 return;
@@ -235,7 +305,6 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                     if (!confirmar.isConfirmed) return;
                 }
             } else {
-                // En LIBRE sugerimos el interés del ciclo como mínimo si modo = solo_interes
                 if (modoLibre === 'solo_interes') {
                     const interes = round2(resumenLibre?.interes_pendiente_hoy || 0);
                     if (Math.abs(abono - interes) > 0.01) {
@@ -253,6 +322,9 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                 monto_pagado: interes,
                                 forma_pago_id: Number(formaId),
                                 observacion,
+                                // parcial libre: sin descuento desde UI
+                                descuento_scope: 'mora',
+                                descuento_mora: 0,
                                 descuento: 0,
                                 modo: 'solo_interes'
                             });
@@ -266,16 +338,31 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
             }
 
             // Enviamos el pago parcial
-            const resp = await registrarPagoParcial({
+            const payloadParcial = {
                 cuota_id: cuotaSrv.id,
                 monto_pagado: abono,
                 forma_pago_id: Number(formaId),
                 observacion,
-                descuento: isLibre ? 0 : derivedNoLibre.descValido, // en LIBRE, el descuento no aplica en parcial
-                ...(isLibre ? { modo: modoLibre } : {})
-            });
+                ...(isLibre
+                    ? {
+                        // parcial libre: sin descuento desde UI (y evitamos pelea de criterios)
+                        descuento_scope: 'mora',
+                        descuento_mora: 0,
+                        descuento: 0,
+                        modo: modoLibre
+                    }
+                    : {
+                        // no-libre: descuento SOLO mora (MONTO)
+                        descuento_scope: 'mora',
+                        descuento_mora: derivedNoLibre.descValido,
+                        descuento: derivedNoLibre.descValido
+                    })
+            };
 
-            const recibo = resp?.recibo || resp?.data?.recibo;
+            const respRaw = await registrarPagoParcial(payloadParcial);
+            const resp = normalizeData(respRaw);
+
+            const recibo = resp?.recibo || respRaw?.recibo || respRaw?.data?.recibo;
             if (recibo?.numero_recibo) {
                 Swal.fire('¡Abono registrado!', '', 'success');
                 navigate(`/recibo/${recibo.numero_recibo}`);
@@ -287,7 +374,8 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
             onSuccess?.();
         } catch (e) {
             console.error(e);
-            Swal.fire('Error', e?.message || 'No se pudo registrar el pago', 'error');
+            const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || 'No se pudo registrar el pago';
+            Swal.fire('Error', msg, 'error');
         }
     };
 
@@ -307,6 +395,16 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                         <X size={20} />
                     </button>
                 </header>
+
+                {/* Nota permisos (simple y útil) */}
+                {(rolId === 0 || rolId === 1) && (
+                    <div className="mb-4 text-xs text-gray-600">
+                        <span className="font-medium">Regla:</span> el descuento aplica <span className="font-medium">solo sobre la mora</span> (el capital está blindado).
+                        {isLibre && isAdmin && (
+                            <span> En LIBRE, tu usuario no puede bonificar mora (evita 403).</span>
+                        )}
+                    </div>
+                )}
 
                 {/* Resumen */}
                 {!isLibre ? (
@@ -468,7 +566,6 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 
                     {/* Descuento */}
                     {!isLibre ? (
-                        // NO-LIBRE: descuento MONTO sobre MORA (no sobre principal)
                         <div>
                             <label className="block text-sm font-medium">
                                 Descuento (sobre mora)
@@ -491,42 +588,58 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                                         onChange={(e) => field.onChange(e.target.value)}
                                         className={`${inputClass} w-full`}
                                         placeholder="0.00"
+                                        disabled={derivedNoLibre.moraAcum <= 0}
                                     />
                                 )}
                             />
                             {errors.descuento && <p className="text-red-600 text-sm">{errors.descuento.message}</p>}
+                            {derivedNoLibre.moraAcum <= 0 && (
+                                <p className="text-xs text-gray-500 mt-1">No hay mora para bonificar.</p>
+                            )}
                         </div>
                     ) : (
-                        // LIBRE: descuento % sobre MORA del ciclo (solo en PAGO TOTAL)
                         tipoPago === 'total' && (
                             <div>
                                 <label className="block text-sm font-medium">
                                     Descuento % sobre mora del ciclo
                                     <span className="text-gray-500"> — 0 a 100%</span>
                                 </label>
-                                <Controller
-                                    name="descuento"
-                                    control={control}
-                                    rules={{
-                                        min: { value: 0, message: '>= 0' },
-                                        max: { value: 100, message: '<= 100' }
-                                    }}
-                                    render={({ field }) => (
-                                        <input
-                                            type="number"
-                                            step="0.01"
-                                            {...field}
-                                            onChange={(e) => field.onChange(e.target.value)}
-                                            className={`${inputClass} w-full`}
-                                            placeholder="0.00"
+
+                                {!isSuperadmin ? (
+                                    <div className="mt-1 text-sm text-gray-600 bg-gray-50 border rounded p-2">
+                                        Disponible solo para <span className="font-medium">superadmin</span>. (El sistema evita descuentos en LIBRE para admin.)
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Controller
+                                            name="descuento"
+                                            control={control}
+                                            rules={{
+                                                min: { value: 0, message: '>= 0' },
+                                                max: { value: 100, message: '<= 100' }
+                                            }}
+                                            render={({ field }) => (
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    {...field}
+                                                    onChange={(e) => field.onChange(e.target.value)}
+                                                    className={`${inputClass} w-full`}
+                                                    placeholder="0.00"
+                                                    disabled={derivedLibre.moraHoy <= 0}
+                                                />
+                                            )}
                                         />
-                                    )}
-                                />
-                                {errors.descuento && <p className="text-red-600 text-sm">{errors.descuento.message}</p>}
-                                <p className="text-xs text-gray-500 mt-1">
-                                    Mora del ciclo (hoy): {derivedLibre.moraHoy > 0 ? `$${fmtAR(derivedLibre.moraHoy)}` : 'No aplica'}
-                                    {derivedLibre.moraHoy > 0 && ` — Bonificación estimada: $${fmtAR(derivedLibre.descuentoEnPesos)}`}
-                                </p>
+                                        {errors.descuento && <p className="text-red-600 text-sm">{errors.descuento.message}</p>}
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            Mora del ciclo (hoy): {derivedLibre.moraHoy > 0 ? `$${fmtAR(derivedLibre.moraHoy)}` : 'No aplica'}
+                                            {derivedLibre.moraHoy > 0 && ` — Bonificación estimada: $${fmtAR(derivedLibre.descuentoEnPesos)}`}
+                                        </p>
+                                        {derivedLibre.moraHoy <= 0 && (
+                                            <p className="text-xs text-gray-500 mt-1">No hay mora hoy; el descuento no tendría efecto.</p>
+                                        )}
+                                    </>
+                                )}
                             </div>
                         )
                     )}
@@ -589,11 +702,11 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
                             {errors.montoAbono && <p className="text-red-600 text-sm">{errors.montoAbono.message}</p>}
                             {!isLibre ? (
                                 <p className="text-xs text-gray-500 mt-1">
-                                    Primero se cobra la mora del día (${fmtAR(derivedNoLibre.moraAcum)}); el resto va a principal.
+                                    Primero se cobra la mora; el resto va a principal.
                                 </p>
                             ) : (
                                 <p className="text-xs text-gray-500 mt-1">
-                                    En LIBRE no hay mora “por cuota”. Primero se cobra el interés del ciclo y el excedente amortiza capital.
+                                    En LIBRE: primero interés del ciclo, luego mora del ciclo (si aplica) y el excedente amortiza capital.
                                 </p>
                             )}
                         </div>
@@ -655,4 +768,5 @@ const CuotaModal = ({ cuota, onClose, onSuccess }) => {
 };
 
 export default CuotaModal;
+
 

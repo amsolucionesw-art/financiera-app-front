@@ -1,8 +1,9 @@
 // src/components/CancelarCreditoModal.jsx
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, ShieldCheck, Percent, CreditCard } from 'lucide-react';
 import Swal from 'sweetalert2';
 import { useNavigate } from 'react-router-dom';
+import { jwtDecode } from 'jwt-decode';
 
 import { obtenerFormasDePago } from '../services/cuotaService';
 import { cancelarCredito } from '../services/creditoService';
@@ -59,20 +60,65 @@ const buscarUltimoReciboConPolling = async (creditoId, intentos = 3, delayMs = 6
     return null;
 };
 
+/* ───────────────── Auth/Roles ───────────────── */
+const getRolIdFromToken = () => {
+    try {
+        const raw = localStorage.getItem('token') || localStorage.getItem('authToken') || '';
+        if (!raw) return null;
+        const token = raw.replace(/^Bearer\s+/i, '');
+        const decoded = jwtDecode(token);
+        const rid = decoded?.rol_id ?? decoded?.rol ?? decoded?.role ?? null;
+        const n = Number(rid);
+        return Number.isFinite(n) ? n : null;
+    } catch {
+        return null;
+    }
+};
+
+/* Normaliza: apiFetch a veces devuelve directo y a veces {success,data} */
+const normalizeData = (resp) => {
+    if (!resp) return resp;
+    if (resp?.data !== undefined && (resp?.success === true || resp?.success === false)) return resp.data;
+    return resp;
+};
+
 const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
     const navigate = useNavigate();
 
     const [formas, setFormas] = useState([]);
     const [formaId, setFormaId] = useState('');
     const [descuentoPct, setDescuentoPct] = useState('');
-    const [ambito, setAmbito] = useState('mora'); // 'mora' | 'total'
+    const [ambito, setAmbito] = useState('mora'); // 'mora' | 'total' (solo superadmin)
     const [observacion, setObservacion] = useState('');
     const [submitting, setSubmitting] = useState(false);
+
+    const rolId = useMemo(() => getRolIdFromToken(), []);
+    const isSuperadmin = rolId === 0;
+    const isAdmin = rolId === 1;
+
+    const isLibre = useMemo(() => {
+        const mod = String(credito?.modalidad_credito ?? '').toLowerCase();
+        return mod === 'libre';
+    }, [credito?.modalidad_credito]);
+
+    // Enforce UI: admin solo puede bonificar mora; en LIBRE admin no bonifica (evita rechazos del back)
+    useEffect(() => {
+        if (!isSuperadmin && ambito !== 'mora') setAmbito('mora');
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isSuperadmin]);
+
+    useEffect(() => {
+        if (isLibre && !isSuperadmin && String(descuentoPct || '') !== '' && Number(descuentoPct) !== 0) {
+            setDescuentoPct('0');
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isLibre, isSuperadmin]);
 
     useEffect(() => {
         (async () => {
             try {
-                const f = await obtenerFormasDePago();
+                const fRaw = await obtenerFormasDePago();
+                const f = normalizeData(fRaw);
                 setFormas(Array.isArray(f) ? f : []);
             } catch (e) {
                 console.error(e);
@@ -100,14 +146,22 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
 
     const baseTotal = round2(principalPendiente + moraAcum);
 
-    const dPct = clamp(descuentoPct, 0, 100);
+    // Porcentaje input
+    const dPctRaw = clamp(descuentoPct, 0, 100);
+
+    // Reglas por rol/modalidad:
+    // - Admin: ambito fijo mora
+    // - Admin + LIBRE: descuento forzado a 0
+    const ambitoEfectivo = isSuperadmin ? ambito : 'mora';
+    const dPct = (!isSuperadmin && isLibre) ? 0 : dPctRaw;
+
     const descuentoEstimado =
-        ambito === 'total'
+        ambitoEfectivo === 'total'
             ? round2(baseTotal * (dPct / 100))
             : round2(moraAcum * (dPct / 100));
 
     const totalEstimado =
-        ambito === 'total'
+        ambitoEfectivo === 'total'
             ? round2(Math.max(baseTotal - descuentoEstimado, 0))
             : round2(principalPendiente + Math.max(moraAcum - descuentoEstimado, 0));
 
@@ -118,17 +172,36 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
             Swal.fire('Atención', 'Seleccioná una forma de pago.', 'warning');
             return;
         }
-        if (Number.isNaN(Number(descuentoPct)) || dPct < 0 || dPct > 100) {
+
+        // Permisos: solo superadmin/admin
+        if (!isSuperadmin && !isAdmin) {
+            Swal.fire('Sin permiso', 'Tu usuario no tiene permisos para cancelar créditos.', 'warning');
+            return;
+        }
+
+        if (Number.isNaN(Number(descuentoPct)) || dPctRaw < 0 || dPctRaw > 100) {
             Swal.fire('Atención', 'El descuento debe ser un porcentaje entre 0 y 100.', 'warning');
             return;
         }
+
+        // Regla: LIBRE + admin => descuento 0 (evita rechazos del back)
+        const pctEnviar = (!isSuperadmin && isLibre) ? 0 : Number(dPct);
+        const ambitoEnviar = isSuperadmin ? ambito : 'mora';
 
         setSubmitting(true);
         try {
             const resp = await cancelarCredito(credito.id, {
                 forma_pago_id: Number(formaId),
-                descuento_porcentaje: Number(dPct),
-                descuento_sobre: ambito,
+
+                // Legacy/actual del endpoint de cancelar (si existe así)
+                descuento_porcentaje: pctEnviar,
+                descuento_sobre: ambitoEnviar,
+
+                // Nuevo/compat (alineado a pagos/cuotas): descuento SOLO sobre mora
+                descuento_scope: 'mora',
+                descuento_mora: pctEnviar,
+                descuento: pctEnviar,
+
                 observacion
             });
 
@@ -144,13 +217,10 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
 
             if (numero) {
                 try {
-                    // Preferimos SPA
                     navigate(`/recibo/${encodeURIComponent(numero)}`);
                 } catch {
-                    // Si por alguna razón el Router no enruta (contexto, wrappers, etc.), forzamos
                     window.location.assign(`/recibo/${encodeURIComponent(numero)}`);
                 }
-                // Cerramos luego de disparar la navegación
                 onClose?.();
                 onSuccess?.();
             } else {
@@ -166,6 +236,7 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
             console.error(e2);
             const msg =
                 e2?.response?.data?.message ||
+                e2?.response?.data?.error ||
                 e2?.message ||
                 'No se pudo cancelar el crédito';
             Swal.fire('Error', msg, 'error');
@@ -181,9 +252,9 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
         'inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm cursor-pointer select-none';
 
     const helperSegunAmbito =
-        ambito === 'total'
+        ambitoEfectivo === 'total'
             ? 'El descuento se aplica sobre (principal + mora).'
-            : 'El descuento se aplica SOLO sobre la mora del día.';
+            : 'El descuento se aplica SOLO sobre la mora.';
 
     return (
         <section className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/50 p-4">
@@ -199,6 +270,17 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                     </button>
                 </header>
 
+                {/* Nota reglas */}
+                <div className="mb-4 text-xs text-gray-600">
+                    <span className="font-medium">Regla:</span> el descuento no toca el capital por defecto.
+                    {isLibre && !isSuperadmin && (
+                        <span> En <span className="font-medium">LIBRE</span>, admin no puede bonificar (evita rechazos del servidor).</span>
+                    )}
+                    {!isSuperadmin && (
+                        <span> (Admin: descuento solo sobre mora.)</span>
+                    )}
+                </div>
+
                 {/* Resumen estimado */}
                 <dl className="mb-4 grid grid-cols-2 gap-4 text-sm">
                     <div>
@@ -209,35 +291,41 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                         <dt className="text-gray-600">Mora acumulada (estimado)</dt>
                         <dd className="mt-0.5 font-medium">${fmtAR(moraAcum)}</dd>
                     </div>
+
                     <div className="col-span-2">
                         <dt className="text-gray-600">Ámbito del descuento</dt>
                         <dd className="mt-1 flex items-center gap-2">
+                            {/* Admin: solo mora. Superadmin: puede elegir */}
                             <label
-                                className={`${radioClass} ${ambito === 'mora' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'}`}
+                                className={`${radioClass} ${ambitoEfectivo === 'mora' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'} ${!isSuperadmin ? 'opacity-80 cursor-not-allowed' : ''}`}
                             >
                                 <input
                                     type="radio"
                                     name="ambito"
                                     value="mora"
-                                    checked={ambito === 'mora'}
-                                    onChange={() => setAmbito('mora')}
+                                    checked={ambitoEfectivo === 'mora'}
+                                    onChange={() => isSuperadmin && setAmbito('mora')}
                                     className="hidden"
+                                    disabled={!isSuperadmin}
                                 />
                                 <span>Solo sobre mora</span>
                             </label>
-                            <label
-                                className={`${radioClass} ${ambito === 'total' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'}`}
-                            >
-                                <input
-                                    type="radio"
-                                    name="ambito"
-                                    value="total"
-                                    checked={ambito === 'total'}
-                                    onChange={() => setAmbito('total')}
-                                    className="hidden"
-                                />
-                                <span>Sobre total</span>
-                            </label>
+
+                            {isSuperadmin && (
+                                <label
+                                    className={`${radioClass} ${ambitoEfectivo === 'total' ? 'border-emerald-500 bg-emerald-50' : 'border-gray-300'}`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="ambito"
+                                        value="total"
+                                        checked={ambitoEfectivo === 'total'}
+                                        onChange={() => setAmbito('total')}
+                                        className="hidden"
+                                    />
+                                    <span>Sobre total</span>
+                                </label>
+                            )}
                         </dd>
                         <p className="mt-1 text-xs text-gray-500">{helperSegunAmbito}</p>
                     </div>
@@ -252,7 +340,7 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                         <dd className="mt-0.5 font-medium">
                             ${fmtAR(totalEstimado)}{' '}
                             <span className="text-xs text-gray-500">
-                                (la mora del día se recalcula en servidor antes de emitir el recibo)
+                                (la mora se recalcula en servidor antes de emitir el recibo)
                             </span>
                         </dd>
                     </div>
@@ -289,16 +377,19 @@ const CancelarCreditoModal = ({ credito, onClose, onSuccess }) => {
                             step="0.01"
                             min="0"
                             max="100"
-                            value={descuentoPct}
+                            value={String(dPct)}
                             onChange={(e) => setDescuentoPct(e.target.value)}
                             className={inputClass}
                             placeholder="0"
                             inputMode="decimal"
+                            disabled={(isLibre && !isSuperadmin)}
                         />
                         <p className="mt-1 text-xs text-gray-500">
-                            {ambito === 'total'
-                                ? 'Se aplica sobre (principal + mora).'
-                                : 'Se aplica proporcionalmente sobre la mora del día (no sobre el capital).'}
+                            {isLibre && !isSuperadmin
+                                ? 'En créditos LIBRE, admin no puede aplicar descuento.'
+                                : (ambitoEfectivo === 'total'
+                                    ? 'Se aplica sobre (principal + mora).'
+                                    : 'Se aplica proporcionalmente sobre la mora (no sobre el capital).')}
                         </p>
                     </div>
 

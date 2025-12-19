@@ -8,6 +8,10 @@ import apiFetch, { getAuthHeaders } from './apiClient';
 const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // opcional (por defecto sin prefijo)
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
+// ✅ Fallback coherente con apiClient cuando trabajás same-origin/proxy
+// (si tu backend no está en /api, cambiá esto)
+const FALLBACK_API_PREFIX = '/api';
+
 // Une segmentos evitando dobles slashes
 const joinPath = (...parts) =>
     '/' +
@@ -67,7 +71,7 @@ const normalizeFormaPagoId = (v) => {
     return Number.isFinite(n) ? n : null;
 };
 
-// Arma URL absoluta (base + path) y agrega query params si los hay
+// ✅ Arma URL absoluta (base + path) y agrega query params si los hay
 const buildURL = (path, params = null) => {
     // Si viene absoluta, pasamos tal cual y le agregamos params
     if (/^https?:\/\//i.test(String(path))) {
@@ -80,10 +84,30 @@ const buildURL = (path, params = null) => {
         });
         return urlAbs.toString();
     }
-    const base = String(API_URL).replace(/\/+$/, '');
-    const full = `${base}${joinPath(path)}`;
+
+    const normalizedPath = joinPath(path);
+
+    // Caso 1: API_URL es vacío → same-origin (Vite proxy / reverse proxy)
+    // En ese caso, si el path no incluye /api, lo preprendemos para que pegue al backend.
+    const base = String(API_URL || '').replace(/\/+$/, '');
+    let full = '';
+
+    if (!base) {
+        if (normalizedPath.startsWith(`${FALLBACK_API_PREFIX}/`) || normalizedPath === FALLBACK_API_PREFIX) {
+            full = normalizedPath;
+        } else {
+            // ⚠️ si ya viene con API_PREFIX (p.ej. "/api/..."), joinPath lo conserva
+            // y esto no duplica.
+            full = `${FALLBACK_API_PREFIX}${normalizedPath}`;
+        }
+    } else {
+        // Caso 2: API_URL viene seteado (ej. http://localhost:3000 o http://localhost:3000/api)
+        full = `${base}${normalizedPath}`;
+    }
+
     if (!params) return full;
-    const url = new URL(full);
+
+    const url = new URL(full, window.location.origin);
     Object.entries(params).forEach(([k, v]) => {
         if (v === undefined || v === null) return;
         if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
@@ -360,6 +384,63 @@ export const descargarExcel = async ({ desde, hasta, periodo, nombreArchivo } = 
     return true;
 };
 
+/**
+ * ✅ NUEVO: Exportar EXCEL del HISTORIAL DE MOVIMIENTOS
+ * Endpoint: GET /caja/movimientos/export-excel  (en realidad queda bajo /api si aplica)
+ * Acepta los mismos filtros que obtenerMovimientos: desde, hasta, tipo, forma_pago_id,
+ * referencia_tipo, referencia_id, q
+ *
+ * Retorna: { blob, filename }
+ */
+export const exportarMovimientosExcel = async (params = {}) => {
+    const normalized = normalizeListParams({ ...params });
+
+    // Estos no aplican para export
+    delete normalized.page;
+    delete normalized.limit;
+
+    const url = buildURL(joinPath(BASE_CAJA, 'movimientos', 'export-excel'), normalized);
+
+    const headers = getAuthHeaders();
+    headers['Accept'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    const res = await fetch(url, { method: 'GET', headers });
+
+    if (!res.ok) {
+        let msg = res.statusText || 'Error al exportar Excel (historial)';
+        try {
+            const ct = res.headers.get('Content-Type') || '';
+            if (ct.includes('application/json')) {
+                const j = await res.json();
+                msg = j?.message || j?.error || msg;
+            } else {
+                const t = await res.text();
+                if (t) msg = t;
+            }
+        } catch {}
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
+    }
+
+    const blob = await res.blob();
+    const cd = res.headers.get('Content-Disposition') || '';
+    const fallback = (() => {
+        const d = normalized.desde || 'sin_desde';
+        const h = normalized.hasta || 'sin_hasta';
+        return `historial_caja_${d}_a_${h}.xlsx`;
+    })();
+    const filename = getFilenameFromContentDisposition(cd) || fallback;
+    return { blob, filename };
+};
+
+/** ✅ NUEVO: Descargar Excel de historial directamente en el navegador */
+export const descargarMovimientosExcel = async (params = {}, { nombreArchivo } = {}) => {
+    const { blob, filename } = await exportarMovimientosExcel(params);
+    triggerBrowserDownload(blob, nombreArchivo || filename || 'historial_caja.xlsx');
+    return true;
+};
+
 export default {
     TIPOS_CAJA,
     obtenerMovimientos,
@@ -370,4 +451,6 @@ export default {
     obtenerResumenMensual,
     exportarExcel,
     descargarExcel,
+    exportarMovimientosExcel,
+    descargarMovimientosExcel,
 };

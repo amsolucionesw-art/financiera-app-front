@@ -19,103 +19,140 @@ const BASE_PAGOS = joinPath(API_PREFIX, 'pagos');
 const BASE_FORMAS = joinPath(API_PREFIX, 'formas-pago');
 const BASE_CREDIT = joinPath(API_PREFIX, 'creditos');
 
+/* ───────────────── Helpers de respuesta ───────────────── */
+/**
+ * apiFetch a veces devuelve el payload directo y a veces {success, data}.
+ * Esto devuelve data SOLO si detecta claramente ese formato.
+ */
+const unwrapSoft = (resp) => {
+    if (!resp) return resp;
+    if (resp?.data !== undefined && (resp?.success === true || resp?.success === false)) return resp.data;
+    return resp;
+};
+
 /* ───────────────── Helpers numéricos ───────────────── */
 /**
- * Soporta: "1.234,56" · "1,234.56" · "1234,56" · "1234.56" · "-1.234,56" · "1 234,56"
- * Regla: el ÚLTIMO '.' o ',' es el separador decimal; el resto son miles.
+ * Parse robusto:
+ * - "1.234,56" (AR) -> 1234.56
+ * - "1,234.56" (US) -> 1234.56
+ * - "1234,56"       -> 1234.56
+ * - "1234.56"       -> 1234.56
+ * - "1.234" (miles) -> 1234
+ * - "1,234" (miles) -> 1234
+ * Regla:
+ * - Si hay '.' y ',', el último separador es decimal; el otro son miles.
+ * - Si hay un solo separador:
+ *   - si tiene 1-2 decimales -> decimal
+ *   - si tiene exactamente 3 dígitos al final -> miles (caso típico "1.234")
  */
 const sanitizeNumber = (value) => {
     if (value === null || value === undefined) return 0;
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
 
-    const s0 = String(value).trim();
-    if (s0 === '') return 0;
+    let s = String(value).trim();
+    if (s === '') return 0;
 
-    const m = s0.match(/[.,](?=[^.,]*$)/);
-    if (m) {
-        const i = m.index;
-        const intRaw = s0.slice(0, i).replace(/[^\d-]/g, ''); // preserva posible signo
-        const fracRaw = s0.slice(i + 1).replace(/\D/g, '');
-        const normalized = `${intRaw}.${fracRaw}`;
-        const n = Number(normalized);
+    // Limpiar espacios y símbolos (dejamos dígitos, separadores y signo)
+    s = s.replace(/\s+/g, '').replace(/[^\d.,-]/g, '');
+
+    const lastDot = s.lastIndexOf('.');
+    const lastComma = s.lastIndexOf(',');
+
+    const hasDot = lastDot !== -1;
+    const hasComma = lastComma !== -1;
+
+    const toNumber = (txt) => {
+        const n = Number(txt);
         return Number.isFinite(n) ? n : 0;
+    };
+
+    // Caso con ambos separadores: el último manda como decimal
+    if (hasDot && hasComma) {
+        const decimalIsDot = lastDot > lastComma;
+        if (decimalIsDot) {
+            // miles = coma, decimal = punto
+            const normalized = s.replace(/,/g, '');
+            return toNumber(normalized);
+        } else {
+            // miles = punto, decimal = coma
+            const normalized = s.replace(/\./g, '').replace(',', '.');
+            return toNumber(normalized);
+        }
     }
-    const n = Number(s0.replace(/[^\d-]/g, ''));
-    return Number.isFinite(n) ? n : 0;
+
+    // Solo coma
+    if (hasComma && !hasDot) {
+        const parts = s.split(',');
+        if (parts.length !== 2) return toNumber(s.replace(/,/g, '')); // múltiples comas raras -> las quito
+        const [intPart, decPart] = parts;
+        // 1-2 decimales => decimal
+        if (decPart.length >= 1 && decPart.length <= 2) {
+            return toNumber(`${intPart.replace(/,/g, '')}.${decPart}`);
+        }
+        // 3 decimales exactos suele ser miles ("1,234")
+        if (decPart.length === 3 && intPart.replace('-', '').length <= 3) {
+            return toNumber(`${intPart}${decPart}`); // quita la coma
+        }
+        // fallback: tratamos coma como decimal igualmente
+        return toNumber(`${intPart}.${decPart}`);
+    }
+
+    // Solo punto
+    if (hasDot && !hasComma) {
+        const parts = s.split('.');
+        if (parts.length !== 2) return toNumber(s.replace(/\./g, '')); // múltiples puntos -> los quito
+        const [intPart, decPart] = parts;
+        if (decPart.length >= 1 && decPart.length <= 2) {
+            return toNumber(`${intPart}.${decPart}`);
+        }
+        if (decPart.length === 3 && intPart.replace('-', '').length <= 3) {
+            return toNumber(`${intPart}${decPart}`); // "1.234" => 1234
+        }
+        return toNumber(`${intPart}.${decPart}`);
+    }
+
+    // Sin separadores
+    return toNumber(s.replace(/[^\d-]/g, ''));
 };
 
 /* ───────────────── CRUD Cuotas ───────────────── */
 
-/** Crear una nueva cuota (normalmente no se usa directamente) */
 export const crearCuota = (data) =>
     apiFetch(BASE_CUOTAS, {
         method: 'POST',
         body: data,
     });
 
-/** Obtener todas las cuotas (el backend actualiza mora internamente) */
-export const obtenerCuotas = () => apiFetch(BASE_CUOTAS);
+export const obtenerCuotas = async () => unwrapSoft(await apiFetch(BASE_CUOTAS));
 
-/** NUEVO: Obtener solo cuotas vencidas (para la notificación/tabla dedicada)
- * Acepta filtros por querystring:
- *   { clienteId?, cobradorId?, zonaId?, desde?, hasta?, minDiasVencida? }
- */
-export const obtenerCuotasVencidas = (params = {}) =>
-    apiFetch(joinPath(BASE_CUOTAS, 'vencidas'), { params });
+/** NUEVO: Obtener solo cuotas vencidas */
+export const obtenerCuotasVencidas = async (params = {}) =>
+    unwrapSoft(await apiFetch(joinPath(BASE_CUOTAS, 'vencidas'), { params }));
 
-/**
- * NUEVO: Ruta de cobro automática del COBRADOR logueado.
- *
- * Backend sugerido: GET /cuotas/ruta-cobro
- * Query opcional:
- *   {
- *     includeVencidas?: boolean (default true)
- *     includePendientesHoy?: boolean (default true)
- *     zonaId?: string|number
- *     clienteId?: string|number
- *     modo?: 'plano' | 'separado' (default 'plano')
- *   }
- *
- * Respuesta esperada (según back):
- *   - { items, meta }   ó   { vencidas, hoy, meta } (modo=separado)
- *   - envuelto o no en { success, data: ... } (según apiFetch)
- */
-export const obtenerRutaCobroCobrador = (params = {}) =>
-    apiFetch(joinPath(BASE_CUOTAS, 'ruta-cobro'), { params });
+/** NUEVO: Ruta de cobro automática del cobrador logueado */
+export const obtenerRutaCobroCobrador = async (params = {}) =>
+    unwrapSoft(await apiFetch(joinPath(BASE_CUOTAS, 'ruta-cobro'), { params }));
 
-/** Obtener una cuota por ID */
-export const obtenerCuotaPorId = (id) => apiFetch(joinPath(BASE_CUOTAS, id));
+export const obtenerCuotaPorId = async (id) => unwrapSoft(await apiFetch(joinPath(BASE_CUOTAS, id)));
 
-/** Actualizar una cuota */
 export const actualizarCuota = (id, data) =>
     apiFetch(joinPath(BASE_CUOTAS, id), {
         method: 'PUT',
         body: data,
     });
 
-/** Eliminar una cuota */
 export const eliminarCuota = (id) =>
     apiFetch(joinPath(BASE_CUOTAS, id), { method: 'DELETE' });
 
-/** Obtener cuotas por crédito (el backend recalcula mora antes de devolver y suele incluir pagos) */
-export const obtenerCuotasPorCredito = (creditoId) =>
-    apiFetch(joinPath(BASE_CUOTAS, 'credito', creditoId));
+export const obtenerCuotasPorCredito = async (creditoId) =>
+    unwrapSoft(await apiFetch(joinPath(BASE_CUOTAS, 'credito', creditoId)));
 
-/** Forzar actualización de cuotas vencidas (backend marca vencidas < hoy) */
 export const actualizarVencidas = () =>
     apiFetch(joinPath(BASE_CUOTAS, 'actualizar-vencidas'), { method: 'PUT' });
 
-/** Recalcular mora de una cuota (idempotente) */
 export const recalcularMoraCuota = (cuotaId) =>
     apiFetch(joinPath(BASE_CUOTAS, cuotaId, 'recalcular-mora'), { method: 'PUT' });
 
-/**
- * Recalcular mora por lote (idempotente).
- * Acepta:
- *   - { credito_id }
- *   - { cuota_ids: [..] }
- *   - { todas_vencidas: true }
- */
 export const recalcularMora = (payload) =>
     apiFetch(joinPath(BASE_CUOTAS, 'recalcular-mora'), {
         method: 'POST',
@@ -124,18 +161,11 @@ export const recalcularMora = (payload) =>
 
 /* ───────────────── Pagos ───────────────── */
 
-/** Obtener pagos de una cuota */
-export const obtenerPagosPorCuota = (cuotaId) =>
-    apiFetch(joinPath(BASE_PAGOS, 'cuota', cuotaId));
+export const obtenerPagosPorCuota = async (cuotaId) =>
+    unwrapSoft(await apiFetch(joinPath(BASE_PAGOS, 'cuota', cuotaId)));
 
 /**
- * Registrar un abono parcial (incluye opcional descuento).
- * Backend: POST /pagos
- * - En "libre": primero interés de ciclos (y faltante del actual), luego capital.
- *      - En Mes 1/2, si se envía `modo: "solo_interes"`, el back capará el monto al interés del ciclo.
- *      - En Mes 3, el back **rechaza** el pago parcial (HTTP 400).
- * - En "común/progresivo": primero mora, luego principal.
- * Respuesta: { success, message, cuota, recibo, recibo_ui }
+ * Registrar un abono parcial
  */
 export const registrarPagoParcial = ({
     cuota_id,
@@ -143,7 +173,7 @@ export const registrarPagoParcial = ({
     forma_pago_id,
     observacion,
     descuento = 0,
-    modo, // opcional: "solo_interes" | "interes_y_capital"
+    modo,
 }) =>
     apiFetch(BASE_PAGOS, {
         method: 'POST',
@@ -158,17 +188,20 @@ export const registrarPagoParcial = ({
     });
 
 /**
- * Registra un PAGO TOTAL / LIQUIDACIÓN de cuota
+ * PAGO TOTAL / LIQUIDACIÓN de cuota
  * Backend: POST /pagos/total
- * - LIBRE: liquida interés de ciclo(s) + capital (descuento como % sobre el total).
- * - COMÚN/PROGRESIVO: paga mora + principal (descuento como MONTO sobre principal).
- * Respuesta: { success, message, cuota, recibo, recibo_ui }
+ *
+ * Nota: agrego campos compat opcionales por si el backend ya contempla variantes.
  */
 export const registrarPagoTotal = ({
     cuota_id,
     forma_pago_id,
     observacion,
     descuento = 0,
+
+    // compat opcionales (si el backend los ignora, no pasa nada)
+    descuento_sobre, // 'mora' | 'total' | etc.
+    descuento_porcentaje,
 }) =>
     apiFetch(joinPath(BASE_PAGOS, 'total'), {
         method: 'POST',
@@ -177,30 +210,45 @@ export const registrarPagoTotal = ({
             forma_pago_id,
             observacion,
             descuento: sanitizeNumber(descuento),
+            ...(descuento_sobre ? { descuento_sobre: String(descuento_sobre).toLowerCase() } : {}),
+            ...(descuento_porcentaje !== undefined && descuento_porcentaje !== null
+                ? { descuento_porcentaje: sanitizeNumber(descuento_porcentaje) }
+                : {}),
         },
     });
 
 /**
  * Compatibilidad: pagar cuota completa (redirige a /pagos/total)
- * - Usa { cuotaId, forma_pago_id, observacion, descuento }
+ * Acepta:
+ * - cuotaId o cuota_id
+ * - forma_pago_id o formaId
  */
-export const pagarCuota = ({ cuotaId, forma_pago_id, observacion, descuento = 0 }) =>
+export const pagarCuota = ({
+    cuotaId,
+    cuota_id,
+    forma_pago_id,
+    formaId,
+    observacion,
+    descuento = 0,
+
+    // compat opcionales
+    descuento_sobre,
+    descuento_porcentaje,
+}) =>
     registrarPagoTotal({
-        cuota_id: cuotaId,
-        forma_pago_id,
+        cuota_id: cuota_id ?? cuotaId,
+        forma_pago_id: forma_pago_id ?? formaId,
         observacion,
         descuento,
+        descuento_sobre,
+        descuento_porcentaje,
     });
 
 /** Listar formas de pago */
-export const obtenerFormasDePago = () => apiFetch(BASE_FORMAS);
+export const obtenerFormasDePago = async () => unwrapSoft(await apiFetch(BASE_FORMAS));
 
 /* ───────────────── Helpers compuestos ───────────────── */
-/**
- * Helper para la UI: trae cuotas + historial de pagos sin N+1.
- * Si el back YA incluye `pagos` en /cuotas/credito/:id, se usa directamente.
- * Si faltan, solo consulta los pagos de esas cuotas específicas.
- */
+
 export const obtenerCuotasConPagos = async (creditoId) => {
     const cuotas = await obtenerCuotasPorCredito(creditoId);
     if (!Array.isArray(cuotas) || cuotas.length === 0) return [];
@@ -209,12 +257,11 @@ export const obtenerCuotasConPagos = async (creditoId) => {
     const faltantes = cuotas.filter((c) => !Array.isArray(c.pagos));
     if (faltantes.length === 0) return cuotas;
 
-    // Cargar pagos solo para las que no traen
     const pagosMap = new Map();
     await Promise.all(
         faltantes.map(async (c) => {
             const pagos = await obtenerPagosPorCuota(c.id).catch(() => []);
-            pagosMap.set(c.id, pagos);
+            pagosMap.set(c.id, Array.isArray(pagos) ? pagos : []);
         })
     );
 
@@ -222,14 +269,15 @@ export const obtenerCuotasConPagos = async (creditoId) => {
 };
 
 /**
- * Resumen de crédito LIBRE (para mostrar ciclo actual, interés del ciclo y total de liquidación)
+ * Resumen de crédito LIBRE
  * Backend: GET /creditos/:id/resumen-libre[?fecha=YYYY-MM-DD]
- * Retorna: { saldo_capital, interes_pendiente_hoy, total_liquidacion_hoy, tasa_decimal, hoy, ciclo_actual }
  */
-export const obtenerResumenLibre = (creditoId, fecha) =>
-    apiFetch(joinPath(BASE_CREDIT, creditoId, 'resumen-libre'), {
-        params: fecha ? { fecha } : undefined,
-    });
+export const obtenerResumenLibre = async (creditoId, fecha) =>
+    unwrapSoft(
+        await apiFetch(joinPath(BASE_CREDIT, creditoId, 'resumen-libre'), {
+            params: fecha ? { fecha } : undefined,
+        })
+    );
 
 export default {
     crearCuota,

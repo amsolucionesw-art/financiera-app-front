@@ -26,6 +26,36 @@ const isDateLike = (v) => {
     return false;
 };
 
+/**
+ * Formatea fechas sin “-1 día” por TZ.
+ * Regla:
+ * - Si viene como DATEONLY "YYYY-MM-DD" => devolver tal cual.
+ * - Si viene como ISO y empieza con "YYYY-MM-DD" => devolver slice(0,10).
+ * - Si viene como otra cosa parseable => usar Date (último recurso).
+ */
+const formatDateSafeYMD = (v) => {
+    if (v == null) return '';
+    const s = String(v);
+
+    // ✅ DATEONLY exacto: NO convertir a Date()
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+    // ✅ ISO típico: usar la parte de fecha (evita TZ shift)
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return s.slice(0, 10);
+
+    // Último recurso: parsear y formatear
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${dd}`;
+    }
+
+    // Fallback conservador
+    return s.length >= 10 ? s.slice(0, 10) : s;
+};
+
 /** Formateo por defecto de celdas, con conocimiento de la columna */
 const renderValuePretty = (v, column) => {
     if (v == null) return '';
@@ -47,18 +77,9 @@ const renderValuePretty = (v, column) => {
         return String(v ?? '');
     }
 
-    // 3) Fechas
+    // 3) Fechas (✅ sin corrimiento por zona horaria)
     if (isDateLike(v)) {
-        // mostrar sólo YYYY-MM-DD
-        const d = new Date(v);
-        if (!Number.isNaN(d.getTime())) {
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, '0');
-            const dd = String(d.getDate()).padStart(2, '0');
-            return `${y}-${m}-${dd}`;
-        }
-        // si vino ya como YYYY-MM-DD
-        return String(v).slice(0, 10);
+        return formatDateSafeYMD(v);
     }
 
     // 4) Números: formatear bonito (para montos, cantidades, etc.)
@@ -413,4 +434,3 @@ const InformeTable = ({ data, columns, loading }) => {
 };
 
 export default InformeTable;
-

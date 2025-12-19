@@ -19,38 +19,73 @@ const BASE = joinPath(API_PREFIX, 'creditos');
 
 /* ───────────────── Helpers numéricos ───────────────── */
 
+/**
+ * Convierte a número soportando:
+ * - 1.234,56 (AR)
+ * - 1234,56
+ * - 1234.56
+ * - 1234
+ *
+ * Nota: la versión anterior eliminaba todos los puntos siempre, rompiendo "1234.56".
+ */
 const sanitizeNumber = (value) => {
   if (value === null || value === undefined) return 0;
+
   if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+
   if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed === '') return 0;
-    // admite "1.234,56" o "1234,56" o "1234.56"
-    return Number(trimmed.replace(/\./g, '').replace(',', '.')) || 0;
+    let s = value.trim();
+    if (s === '') return 0;
+
+    // Mantener solo dígitos, separadores y signo
+    s = s.replace(/[^\d.,-]/g, '');
+
+    const hasDot = s.includes('.');
+    const hasComma = s.includes(',');
+
+    if (hasDot && hasComma) {
+      // Asumimos formato AR: puntos miles, coma decimal
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else if (hasComma && !hasDot) {
+      // Coma decimal
+      s = s.replace(',', '.');
+    } // else: solo punto o ninguno → Number() lo entiende
+
+    const n = Number(s);
+    return Number.isFinite(n) ? n : 0;
   }
+
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 };
 
 const sanitizeInt = (value, min = 1) => {
-  const n = parseInt(sanitizeNumber(value), 10);
-  if (!Number.isFinite(n) || isNaN(n)) return min;
+  const n = Math.trunc(sanitizeNumber(value));
+  if (!Number.isFinite(n) || Number.isNaN(n)) return min;
   return Math.max(min, n);
 };
 
-// Compat: apiFetch ya devuelve payload.data o el objeto directo;
-// dejo unwrap por si recibes algo anidado desde otros puntos.
-const unwrap = (resp) => (resp && resp.data !== undefined ? resp.data : resp);
+// Compat: apiFetch a veces devuelve directo y a veces {success,data}
+const unwrap = (resp) => {
+  if (!resp) return resp;
+  if (resp?.data !== undefined) return resp.data;
+  return resp;
+};
 
 /* ───────────────── Helpers de auth/headers (para fetch directo) ───────────────── */
 
 const getAuthHeader = () => {
   try {
-    const t =
+    const raw =
       localStorage.getItem('token') ||
+      localStorage.getItem('authToken') ||
       sessionStorage.getItem('token') ||
+      sessionStorage.getItem('authToken') ||
       null;
-    return t ? { Authorization: `Bearer ${t}` } : {};
+
+    if (!raw) return {};
+    const token = String(raw).replace(/^Bearer\s+/i, '').trim();
+    return token ? { Authorization: `Bearer ${token}` } : {};
   } catch {
     return {};
   }
@@ -85,9 +120,9 @@ export const periodLengthFromTipo = (tipo) => {
  */
 export const previewRefinanciacion = ({
   saldo,
-  opcion,         // 'P1' | 'P2' | 'manual'
+  opcion, // 'P1' | 'P2' | 'manual'
   tasaManual = 0, // si 'manual'
-  tipo_credito,   // 'mensual' | 'quincenal' | 'semanal'
+  tipo_credito, // 'mensual' | 'quincenal' | 'semanal'
   cantidad_cuotas
 }) => {
   const s = sanitizeNumber(saldo);
@@ -103,9 +138,9 @@ export const previewRefinanciacion = ({
   return {
     saldo: s,
     tasa_mensual: tasaMensual,
-    tasa_por_periodo: +(tasaPorPeriodo.toFixed(4)),
+    tasa_por_periodo: +tasaPorPeriodo.toFixed(4),
     cantidad_cuotas: n,
-    interes_total_pct: +(interesTotalPct.toFixed(4)),
+    interes_total_pct: +interesTotalPct.toFixed(4),
     interes_total_monto: interesTotalMonto,
     total_a_devolver: total,
     cuota_estimada: cuota
@@ -153,30 +188,25 @@ const normalizeRefiFieldsCredito = (credito) => {
 };
 
 const normalizeRefiFieldsDeep = (payload) => {
-  // Array directo de créditos
   if (Array.isArray(payload)) {
     return payload.map((c) => normalizeRefiFieldsCredito(c));
   }
 
-  // Objeto "cliente" con creditos[]
   if (payload && typeof payload === 'object' && Array.isArray(payload.creditos)) {
     payload.creditos = payload.creditos.map((c) => normalizeRefiFieldsCredito(c));
     return payload;
   }
 
-  // Respuesta anidada tipo { data: ... }
   if (payload && typeof payload === 'object' && payload.data !== undefined) {
     payload.data = normalizeRefiFieldsDeep(payload.data);
     return payload;
   }
 
-  // Objeto "cliente con créditos" anidado tipo { cliente: { creditos: [...] } } (por las dudas)
   if (payload && typeof payload === 'object' && payload.cliente && typeof payload.cliente === 'object') {
     payload.cliente = normalizeRefiFieldsDeep(payload.cliente);
     return payload;
   }
 
-  // Crédito único
   if (payload && typeof payload === 'object' && (payload.id || payload.estado || payload.modalidad_credito)) {
     return normalizeRefiFieldsCredito(payload);
   }
@@ -218,7 +248,7 @@ export const obtenerCreditoPorId = async (id) => {
  */
 export const obtenerResumenLibre = (id, fecha) =>
   apiFetch(joinPath(BASE, id, 'resumen-libre'), {
-    params: fecha ? { fecha } : undefined,
+    params: fecha ? { fecha } : undefined
   });
 
 /**
@@ -230,14 +260,14 @@ export const crearCredito = (data) => {
   const { interes, monto_acreditar, ...rest } = data || {};
   const payload = {
     ...rest,
-    monto_acreditar: sanitizeNumber(monto_acreditar),
+    monto_acreditar: sanitizeNumber(monto_acreditar)
   };
   if (interes !== undefined && interes !== null && `${interes}` !== '') {
     payload.interes = sanitizeNumber(interes); // guardamos en porcentaje (p.ej. 60)
   }
   return apiFetch(BASE, {
     method: 'POST',
-    body: payload,
+    body: payload
   });
 };
 
@@ -250,14 +280,14 @@ export const actualizarCredito = (id, data) => {
   const { interes, monto_acreditar, ...rest } = data || {};
   const payload = {
     ...rest,
-    monto_acreditar: sanitizeNumber(monto_acreditar),
+    monto_acreditar: sanitizeNumber(monto_acreditar)
   };
   if (interes !== undefined && interes !== null && `${interes}` !== '') {
     payload.interes = sanitizeNumber(interes);
   }
   return apiFetch(joinPath(BASE, id), {
     method: 'PUT',
-    body: payload,
+    body: payload
   });
 };
 
@@ -268,8 +298,7 @@ export const verificarEliminableCredito = async (id) => {
 };
 
 /** Elimina un crédito (DELETE directo) */
-export const eliminarCredito = (id) =>
-  apiFetch(joinPath(BASE, id), { method: 'DELETE' });
+export const eliminarCredito = (id) => apiFetch(joinPath(BASE, id), { method: 'DELETE' });
 
 /**
  * Elimina un crédito con pre-chequeo:
@@ -279,9 +308,7 @@ export const eliminarCredito = (id) =>
 export const eliminarCreditoSeguro = async (id) => {
   const { eliminable, cantidadPagos } = await verificarEliminableCredito(id);
   if (!eliminable) {
-    const err = new Error(
-      `No se puede eliminar el crédito porque tiene pagos registrados (${cantidadPagos}).`
-    );
+    const err = new Error(`No se puede eliminar el crédito porque tiene pagos registrados (${cantidadPagos}).`);
     err.status = 409;
     err.data = { eliminable, cantidadPagos };
     throw err;
@@ -291,22 +318,7 @@ export const eliminarCreditoSeguro = async (id) => {
 
 /* ───────────────── Refinanciación ───────────────── */
 
-/**
- * Refinancia un crédito (P1 / P2 / manual).
- * Backend: POST /creditos/:id/refinanciar
- * Body:
- *  - opcion: 'P1' | 'P2' | 'manual'
- *  - tasaManual?: number (si opcion === 'manual')  -> tasa mensual
- *  - tipo_credito?: 'mensual' | 'semanal' | 'quincenal'
- *  - cantidad_cuotas?: number (>=1)
- *
- * El backend ya valida modalidad (común, progresivo, libre) y
- * calcula la base de refinanciación (saldo + mora pendiente).
- */
-export const refinanciarCredito = async (
-  creditoId,
-  { opcion, tasaManual = 0, tipo_credito, cantidad_cuotas }
-) => {
+export const refinanciarCredito = async (creditoId, { opcion, tasaManual = 0, tipo_credito, cantidad_cuotas }) => {
   const body = { opcion };
   if (opcion === 'manual') body.tasaManual = sanitizeNumber(tasaManual);
   if (tipo_credito) body.tipo_credito = String(tipo_credito);
@@ -316,21 +328,14 @@ export const refinanciarCredito = async (
 
   const resp = await apiFetch(joinPath(BASE, creditoId, 'refinanciar'), {
     method: 'POST',
-    body,
+    body
   });
 
-  // En algunos UIs se usa el ID devuelto, pero igual normalizamos por consistencia
   return normalizeRefiFieldsDeep(resp);
 };
 
-/**
- * Wrapper seguro para UI:
- * - Valida en cliente que la modalidad sea una de las permitidas para refi:
- *   "comun", "progresivo" o "libre".
- * - El cálculo "serio" lo hace SIEMPRE el backend.
- */
 export const refinanciarCreditoSeguro = async (
-  credito, // objeto crédito completo o al menos { id, modalidad_credito, saldo_actual, tipo_credito, cantidad_cuotas }
+  credito,
   { opcion, tasaManual = 0, tipo_credito, cantidad_cuotas }
 ) => {
   const id = credito?.id;
@@ -338,27 +343,16 @@ export const refinanciarCreditoSeguro = async (
 
   const modalidad = String(credito?.modalidad_credito || '').toLowerCase();
   if (!['comun', 'progresivo', 'libre'].includes(modalidad)) {
-    const err = new Error(
-      'Solo se permite refinanciar créditos de modalidad "comun", "progresivo" o "libre".'
-    );
+    const err = new Error('Solo se permite refinanciar créditos de modalidad "comun", "progresivo" o "libre".');
     err.status = 400;
     throw err;
   }
 
-  // (Opcional) podrías calcular un preview para mostrar al usuario:
-  // const preview = previewRefinanciacion({ ... });
-
-  return refinanciarCredito(id, {
-    opcion,
-    tasaManual,
-    tipo_credito,
-    cantidad_cuotas
-  });
+  return refinanciarCredito(id, { opcion, tasaManual, tipo_credito, cantidad_cuotas });
 };
 
 /** Anula un crédito (superadmin) — OJO: debe existir la ruta back /creditos/:id/anular */
-export const anularCredito = (id) =>
-  apiFetch(joinPath(BASE, id, 'anular'), { method: 'POST' });
+export const anularCredito = (id) => apiFetch(joinPath(BASE, id, 'anular'), { method: 'POST' });
 
 /**
  * Solicita anulación de crédito (admin)
@@ -368,11 +362,11 @@ export const anularCredito = (id) =>
 export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
   const body = {
     tipo: 'anular_credito',
-    datos: { creditoId, motivo },
+    datos: { creditoId, motivo }
   };
 
   const pathPendientes = joinPath(API_PREFIX, 'tareas', 'pendientes');
-  const pathCanonico  = joinPath(API_PREFIX, 'tareas');
+  const pathCanonico = joinPath(API_PREFIX, 'tareas');
 
   try {
     return await apiFetch(pathPendientes, { method: 'POST', body });
@@ -380,7 +374,6 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
     const status = err?.status ?? err?.response?.status;
     const msg = (err?.message || '').toLowerCase();
     if (status === 404 || msg.includes('404')) {
-      // Reintento contra la ruta canónica
       return apiFetch(pathCanonico, { method: 'POST', body });
     }
     throw err;
@@ -395,14 +388,15 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
  *
  * @param {number|string} creditoId
  * @param {object} options
- * @param {number} options.forma_pago_id                            // requerido
- * @param {number|string} [options.descuento_porcentaje=0]         // porcentaje 0..100
- * @param {'mora'|'total'} [options.descuento_sobre='mora']        // modo de descuento:
- *    - 'mora'  → el descuento se aplica solo sobre la mora (regla por defecto)
- *    - 'total' → (si el backend está habilitado) permite descuento sobre el total (principal+mora)
+ * @param {number} options.forma_pago_id
+ * @param {number|string} [options.descuento_porcentaje=0]   // 0..100
+ * @param {'mora'|'total'} [options.descuento_sobre='mora']
  * @param {string|null} [options.observacion=null]
  *
- * @returns {Promise<object>} Respuesta normalizada con `numero_recibo` si está disponible.
+ * Campos compat extra (no rompen si el backend los ignora):
+ * @param {'mora'|'total'|null} [options.descuento_scope]
+ * @param {number|string|null} [options.descuento_mora]
+ * @param {number|string|null} [options.descuento]
  */
 export const cancelarCredito = async (
   creditoId,
@@ -410,34 +404,52 @@ export const cancelarCredito = async (
     forma_pago_id,
     descuento_porcentaje = 0,
     descuento_sobre = 'mora',
-    observacion = null
+    observacion = null,
+
+    // compat extras
+    descuento_scope = null,
+    descuento_mora = null,
+    descuento = null
   }
 ) => {
+  const pct = sanitizeNumber(descuento_porcentaje);
+  const modo = String(descuento_sobre || 'mora').toLowerCase();
+
   const body = {
     forma_pago_id,
-    descuento_porcentaje: sanitizeNumber(descuento_porcentaje),
-    // Enviamos siempre el modo para que el back lo decida (compatibilidad hacia atrás: default 'mora')
-    descuento_sobre: String(descuento_sobre || 'mora').toLowerCase(),
+    descuento_porcentaje: pct,
+    descuento_sobre: modo,
     observacion
   };
+
+  // Compat: algunos servicios del back ya vienen usando estos campos
+  if (descuento_scope != null) body.descuento_scope = String(descuento_scope).toLowerCase();
+  if (descuento_mora != null) body.descuento_mora = sanitizeNumber(descuento_mora);
+  if (descuento != null) body.descuento = sanitizeNumber(descuento);
 
   const resp = await apiFetch(joinPath(BASE, creditoId, 'cancelar'), {
     method: 'POST',
     body
   });
 
-  const data = unwrap(resp) ?? {};
+  const data0 = unwrap(resp);
 
-  // Normalización defensiva para facilitar la redirección al recibo en el front:
-  // — si viene anidado, lo promuevo.
+  // Normalización defensiva sin perder estructuras
+  const data = (data0 && typeof data0 === 'object') ? { ...data0 } : { data: data0 };
+
   const numero =
     data.numero_recibo ??
     data?.recibo?.numero_recibo ??
     data?.data?.numero_recibo ??
-    data?.data?.recibo?.numero_recibo;
+    data?.data?.recibo?.numero_recibo ??
+    null;
 
-  if (numero && !('numero_recibo' in data)) {
-    data.numero_recibo = numero;
+  if (numero != null) data.numero_recibo = numero;
+
+  // Si apiFetch devolvió {success,message}, lo preservamos si vino arriba
+  if (resp && typeof resp === 'object') {
+    if (data.success === undefined && resp.success !== undefined) data.success = resp.success;
+    if (data.message === undefined && resp.message !== undefined) data.message = resp.message;
   }
 
   return data;
@@ -448,11 +460,11 @@ export const cancelarCredito = async (
 /**
  * Calcula un preview de liquidación en el FRONT (sin tocar el back).
  * - Para COMÚN/PROGRESIVO usa las cuotas que tengas en memoria.
- * - Para LIBRE consulta `obtenerResumenLibre` para traer interés vigente del día.
+ * - Para LIBRE consulta `obtenerResumenLibre` para traer interés y mora del día.
  *
  * @param {object} credito - objeto crédito con al menos { modalidad_credito, cuotas[], saldo_actual, id }
  * @param {object} options - { descuento_porcentaje, descuento_sobre: 'mora'|'total' }
- * @returns {Promise<object>} { principal_base, mora_base, descuento_aplicado_mora, descuento_aplicado_principal, total_a_pagar }
+ * @returns {Promise<object>}
  */
 export const previewLiquidacionCredito = async (
   credito,
@@ -461,28 +473,34 @@ export const previewLiquidacionCredito = async (
   const pct = Math.min(Math.max(sanitizeNumber(descuento_porcentaje), 0), 100);
   const modo = String(descuento_sobre || 'mora').toLowerCase();
 
-  const modalidad = String(credito?.modalidad_credito || '');
+  const modalidad = String(credito?.modalidad_credito || '').toLowerCase();
+
   let principalBase = 0;
-  let moraBase = 0;
+  let moraBase = 0;     // “no capital” total: interés + mora (en LIBRE)
+  let interesBase = 0;  // solo para UI (LIBRE)
 
   if (modalidad === 'libre') {
-    // Traigo capital + interés (mora) del día desde el back para precisión
-    const resumen = unwrap(await obtenerResumenLibre(credito.id));
-    const capital = sanitizeNumber(resumen?.saldo_capital ?? credito?.saldo_actual);
-    const interesHoy = sanitizeNumber(resumen?.interes_pendiente_hoy);
+    const resumenRaw = unwrap(await obtenerResumenLibre(credito.id));
+    const capital = sanitizeNumber(resumenRaw?.saldo_capital ?? credito?.saldo_actual);
+    const interesHoy = sanitizeNumber(resumenRaw?.interes_pendiente_hoy);
+    const moraHoy = sanitizeNumber(resumenRaw?.mora_pendiente_hoy);
+
     principalBase = +capital.toFixed(2);
-    moraBase = +interesHoy.toFixed(2);
+    interesBase = +interesHoy.toFixed(2);
+    moraBase = +(interesHoy + moraHoy).toFixed(2);
   } else {
-    // común / progresivo: calculo con lo que hay en memoria
     const cuotas = Array.isArray(credito?.cuotas) ? credito.cuotas : [];
     for (const c of cuotas) {
       const estado = String(c.estado || '').toLowerCase();
       if (!['pendiente', 'parcial', 'vencida'].includes(estado)) continue;
+
       const importe = sanitizeNumber(c.importe_cuota);
       const desc = sanitizeNumber(c.descuento_cuota);
       const pagado = sanitizeNumber(c.monto_pagado_acumulado);
+
       const principalPend = Math.max(+(importe - desc - pagado).toFixed(2), 0);
       const mora = +sanitizeNumber(c.intereses_vencidos_acumulados).toFixed(2);
+
       principalBase = +(principalBase + principalPend).toFixed(2);
       moraBase = +(moraBase + mora).toFixed(2);
     }
@@ -495,6 +513,7 @@ export const previewLiquidacionCredito = async (
   if (modo === 'total') {
     const base = +(principalBase + moraBase).toFixed(2);
     let totalDesc = +(base * (pct / 100)).toFixed(2);
+
     // primero se descuenta de mora, luego de principal
     descMora = Math.min(totalDesc, moraBase);
     totalDesc = +(totalDesc - descMora).toFixed(2);
@@ -512,12 +531,14 @@ export const previewLiquidacionCredito = async (
   return {
     principal_base: principalBase,
     mora_base: moraBase,
+    interes_base: interesBase, // útil para LIBRE
     descuento_aplicado_mora: descMora,
     descuento_aplicado_principal: descPrincipal,
     total_a_pagar: totalAPagar,
-    // convenientes para UI
+
     total_base: +(principalBase + moraBase).toFixed(2),
     total_descuento: +(descMora + descPrincipal).toFixed(2),
+
     resumen: {
       principal_neto: principalNeto,
       mora_neta: moraNeta
@@ -526,11 +547,10 @@ export const previewLiquidacionCredito = async (
 };
 
 /* ──────────────────────── Impresión / Descarga de Ficha ──────────────────────── */
-/** Formatea moneda ARS para la UI */
+
 const money = (n) =>
   Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** Etiqueta para la modalidad como en el back */
 const labelModalidad = (modalidad) => {
   const m = String(modalidad || '').toLowerCase();
   if (m === 'comun') return 'PLAN DE CUOTAS FIJAS';
@@ -541,16 +561,18 @@ const labelModalidad = (modalidad) => {
 const calcularTotalActualFront = (credito) => {
   if (!credito) return 0;
   if (String(credito.modalidad_credito) === 'libre') {
-    // ✅ Alineado al backend: capital + mora vigente (de la cuota abierta)
+    // Alineado “lo mejor posible” sin llamar al resumen: capital + mora acumulada de la cuota abierta
     const capital = Number(credito.saldo_actual || 0);
     const cuota = Array.isArray(credito.cuotas) ? credito.cuotas[0] : null;
     const mora = Number(cuota?.intereses_vencidos_acumulados || 0);
     return +(capital + mora).toFixed(2);
   }
+
   let total = 0;
   for (const c of (credito.cuotas || [])) {
     const estado = String(c.estado || '').toLowerCase();
     if (!['pendiente', 'parcial', 'vencida'].includes(estado)) continue;
+
     const principalPend = Math.max(
       +(Number(c.importe_cuota || 0) - Number(c.descuento_cuota || 0) - Number(c.monto_pagado_acumulado || 0)).toFixed(2),
       0
@@ -570,11 +592,10 @@ const construirHTMLFicha = (credito) => {
   const totalActual = Number(c.total_actual ?? calcularTotalActualFront(c));
   const fechaEmision = new Date().toISOString().slice(0, 10);
 
-  // ▶️ calcular primer y último vencimiento reales (ignorando ficticio de LIBRE)
   const vtosValidos = cuotas
-    .map(ct => ct.fecha_vencimiento)
-    .filter(f => f && f !== LIBRE_VTO_FICTICIO)
-    .sort(); // YYYY-MM-DD ordena bien como string
+    .map((ct) => ct.fecha_vencimiento)
+    .filter((f) => f && f !== LIBRE_VTO_FICTICIO)
+    .sort();
 
   const primerVto = vtosValidos[0] || (c.fecha_compromiso_pago || '-');
   const ultimoVto = vtosValidos.length ? vtosValidos[vtosValidos.length - 1] : '-';
@@ -606,15 +627,16 @@ const construirHTMLFicha = (credito) => {
     }
   </style>`;
 
-  const rows = cuotas.map(ct => {
-    const principalPend = Math.max(
-      +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
-      0
-    );
-    const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
-    const saldoCuota = +(principalPend + mora).toFixed(2); // ✅ igual que el PDF del back
-    const vto = ct.fecha_vencimiento === LIBRE_VTO_FICTICIO ? '—' : (ct.fecha_vencimiento || '-');
-    return `
+  const rows = cuotas
+    .map((ct) => {
+      const principalPend = Math.max(
+        +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
+        0
+      );
+      const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
+      const saldoCuota = +(principalPend + mora).toFixed(2);
+      const vto = ct.fecha_vencimiento === LIBRE_VTO_FICTICIO ? '—' : (ct.fecha_vencimiento || '-');
+      return `
       <tr>
         <td>#${ct.numero_cuota}</td>
         <td>${vto}</td>
@@ -626,18 +648,31 @@ const construirHTMLFicha = (credito) => {
         <td>${String(ct.estado || '').toUpperCase()}</td>
       </tr>
     `;
-  }).join('');
+    })
+    .join('');
 
-  const totales = cuotas.reduce((acc, ct) => {
-    const principalPend = Math.max(
-      +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
-      0
-    );
-    const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
-    acc.principal += principalPend;
-    acc.mora += mora;
-    return acc;
-  }, { principal: 0, mora: 0 });
+  const totales = cuotas.reduce(
+    (acc, ct) => {
+      const principalPend = Math.max(
+        +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
+        0
+      );
+      const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
+      acc.principal += principalPend;
+      acc.mora += mora;
+      return acc;
+    },
+    { principal: 0, mora: 0 }
+  );
+
+  const tel = [cli.telefono, cli.telefono_secundario, cli.telefono_1, cli.telefono_2].filter(Boolean).join(' / ') || '-';
+  const dir = [cli.direccion, cli.direccion_secundaria, cli.direccion_1, cli.direccion_2].filter(Boolean).join(' | ') || '-';
+
+  const cobradorNombre =
+    c?.cobradorCredito?.nombre_completo ||
+    c?.cobrador?.nombre_completo ||
+    c?.cobrador_nombre ||
+    '-';
 
   return `
   <html lang="es">
@@ -655,8 +690,8 @@ const construirHTMLFicha = (credito) => {
         <div class="grid">
           <div class="row"><label>Nombre</label><div>${[cli.nombre, cli.apellido].filter(Boolean).join(' ') || '-'}</div></div>
           <div class="row"><label>DNI</label><div>${cli.dni || '-'}</div></div>
-          <div class="row"><label>Teléfono(s)</label><div>${[cli.telefono_1, cli.telefono_2, cli.telefono].filter(Boolean).join(' / ') || '-'}</div></div>
-          <div class="row"><label>Dirección</label><div>${[cli.direccion_1, cli.direccion_2, cli.direccion].filter(Boolean).join(' | ') || '-'}</div></div>
+          <div class="row"><label>Teléfono(s)</label><div>${tel}</div></div>
+          <div class="row"><label>Dirección</label><div>${dir}</div></div>
         </div>
       </div>
 
@@ -672,7 +707,7 @@ const construirHTMLFicha = (credito) => {
           <div class="row"><label>Fecha acreditación</label><div>${c.fecha_acreditacion || '-'}</div></div>
           <div class="row"><label>Fecha 1er vencimiento</label><div>${primerVto}</div></div>
           <div class="row"><label>Fecha fin de crédito</label><div>${ultimoVto}</div></div>
-          <div class="row"><label>Cobrador</label><div>${c.cobradorCredito?.nombre_completo || '-'}</div></div>
+          <div class="row"><label>Cobrador</label><div>${cobradorNombre}</div></div>
         </div>
 
         <div class="kpi">
@@ -722,7 +757,7 @@ const abrirVentanaImpresion = (html) => {
   if (typeof window === 'undefined') return;
   const w = window.open('', '_blank', 'noopener,noreferrer');
   if (!w) {
-    alert('El bloqueador de ventanas emergentes impidió abrir la vista de impresión. Permití popups para continuar.');
+    alert('El bloqueador de popups impidió abrir la impresión. Permití popups para continuar.');
     return;
   }
   w.document.open();
@@ -739,7 +774,6 @@ const abrirVentanaImpresion = (html) => {
  * Imprime la ficha del crédito desde el FRONT (HTML):
  * - Obtiene el crédito completo del backend
  * - Genera HTML y abre una ventana para imprimir/guardar a PDF
- * No incluye “interés” ni “monto acreditado”.
  */
 export const imprimirFichaDesdeFront = async (creditoId) => {
   const resp = await obtenerCreditoPorId(creditoId);
@@ -756,9 +790,6 @@ export const construirFichaHTML = construirHTMLFicha;
 
 /**
  * Descarga el PDF generado por el backend: GET /creditos/:id/ficha.pdf
- * - Usa import.meta.env (no process)
- * - Adjunta Authorization: Bearer <token> si está disponible (localStorage/sessionStorage)
- * - Guarda como "ficha-credito-<id>.pdf"
  */
 export const descargarFichaCreditoPDF = async (creditoId, filename) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
@@ -768,7 +799,7 @@ export const descargarFichaCreditoPDF = async (creditoId, filename) => {
     headers: {
       ...getAuthHeader()
     },
-    credentials: 'include' // por si usás cookies de sesión además del token
+    credentials: 'include'
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -806,6 +837,5 @@ export const abrirFichaCreditoPDF = async (creditoId) => {
   const blob = await res.blob();
   const blobUrl = URL.createObjectURL(blob);
   window.open(blobUrl, '_blank', 'noopener,noreferrer');
-  // Revocar luego de un tiempo prudente para no invalidar mientras el usuario la mira
   setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 };

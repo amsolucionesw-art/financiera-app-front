@@ -1,28 +1,35 @@
 // src/services/InformeService.js
 
-import apiFetch from './apiClient';
+import apiFetch, { withQuery } from './apiClient';
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX || ''; // sin /api por defecto
-const BASE = `${API_PREFIX}/informes`;
+const BASE = '/informes';
 
-/** Limpia params: quita null/undefined/'' y deja números/arrays tal cual */
+/** Limpia params: quita null/undefined/'' y normaliza booleanos */
 const sanitizeParams = (params = {}) => {
   const clean = {};
   Object.entries(params).forEach(([k, v]) => {
     if (v === null || v === undefined) return;
 
+    // strings
     if (typeof v === 'string') {
       const s = v.trim();
       if (s !== '') clean[k] = s;
       return;
     }
 
+    // arrays
     if (Array.isArray(v)) {
       if (v.length) clean[k] = v; // apiClient maneja arrays con append()
       return;
     }
 
-    clean[k] = v; // números, booleanos, objetos simples
+    // booleanos: uniformamos a "true"/"false" para querystring
+    if (typeof v === 'boolean') {
+      clean[k] = v ? 'true' : 'false';
+      return;
+    }
+
+    clean[k] = v; // números, objetos simples
   });
   return clean;
 };
@@ -31,11 +38,6 @@ const sanitizeParams = (params = {}) => {
  * GET /informes con filtros en querystring.
  * Ej:
  *   obtenerInforme({ tipo: 'clientes', desde: '2025-01-01', hasta: '2025-01-31', zonaId: 3 })
- *
- * Por defecto devuelve JSON → { success, data }
- * Si se pasa { format: 'xlsx' } el backend devuelve un archivo Excel (.xlsx).
- * En ese caso apiFetch devolverá el Blob y deberás manejar la descarga manualmente,
- * o bien usar `descargarInformeExcel` que ya lo hace automáticamente.
  */
 export const obtenerInforme = (params = {}) =>
   apiFetch(BASE, { params: sanitizeParams(params) });
@@ -43,18 +45,23 @@ export const obtenerInforme = (params = {}) =>
 /**
  * Descarga directa de Excel desde el backend.
  * Arma querystring y abre ventana nueva → fuerza download.
- * Útil si no querés manejar Blobs en el cliente.
+ *
+ * Importante:
+ * - Usamos url absoluta construida por apiFetch internamente (porque BASE es relativa).
+ * - Para download simple, construimos el path con query y se lo pasamos a apiFetch
+ *   como URL absoluta utilizando VITE_API_URL desde apiClient (sin duplicar /api).
  */
 export const descargarInformeExcel = (params = {}) => {
   const clean = sanitizeParams({ ...params, format: 'xlsx' });
-  const qs = new URLSearchParams();
-  Object.entries(clean).forEach(([k, v]) => {
-    if (Array.isArray(v)) {
-      v.forEach((item) => qs.append(k, item));
-    } else {
-      qs.set(k, String(v));
-    }
-  });
-  const url = `${BASE}?${qs.toString()}`;
+
+  // withQuery devuelve un path relativo "/informes?...".
+  const pathWithQs = withQuery(BASE, clean);
+
+  // Abrimos contra la misma base que usa apiClient (VITE_API_URL).
+  // Como apiClient.buildURL solo es interno, hacemos un truco seguro:
+  // apiFetch acepta path absoluto, así que convertimos a absoluto manualmente.
+  const RAW_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000/api').replace(/\/+$/, '');
+  const url = `${RAW_BASE}${pathWithQs.startsWith('/') ? '' : '/'}${pathWithQs}`;
+
   window.open(url, '_blank', 'noopener,noreferrer');
 };

@@ -258,6 +258,26 @@ const Diaria = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const rowsPerPage = 10;
 
+    /* Rol del usuario */
+    const [esSuperadmin, setEsSuperadmin] = useState(false);
+    const [esAdmin, setEsAdmin] = useState(false);
+
+    const puedeRegistrarManual = esSuperadmin || esAdmin;
+
+    const tiposAltaPermitidos = useMemo(() => {
+        // Superadmin: todos los tipos manuales
+        if (esSuperadmin) return TIPOS_CAJA;
+        // Admin: SOLO apertura/cierre (movimientos manuales)
+        if (esAdmin) return ['apertura', 'cierre'];
+        // Otros: ninguno
+        return [];
+    }, [esSuperadmin, esAdmin]);
+
+    const defaultTipoAlta = useCallback(() => {
+        if (esAdmin && !esSuperadmin) return 'apertura';
+        return 'ingreso';
+    }, [esAdmin, esSuperadmin]);
+
     /* Alta rápida */
     const [nuevo, setNuevo] = useState({
         tipo: 'ingreso',
@@ -267,15 +287,30 @@ const Diaria = () => {
         referencia_tipo: '',
         referencia_id: '',
     });
-    const resetNuevo = () =>
+
+    const resetNuevo = useCallback(() => {
         setNuevo({
-            tipo: 'ingreso',
+            tipo: defaultTipoAlta(),
             monto: '',
             forma_pago_id: '',
             concepto: '',
             referencia_tipo: '',
             referencia_id: '',
         });
+    }, [defaultTipoAlta]);
+
+    // Si cambia el rol y el tipo actual no está permitido, lo acomodamos
+    useEffect(() => {
+        if (!puedeRegistrarManual) return;
+
+        const actual = String(nuevo.tipo || '').toLowerCase();
+        const permitidos = new Set((tiposAltaPermitidos || []).map((t) => String(t).toLowerCase()));
+
+        if (!permitidos.has(actual)) {
+            setNuevo((s) => ({ ...s, tipo: defaultTipoAlta() }));
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [puedeRegistrarManual, tiposAltaPermitidos, defaultTipoAlta]);
 
     /* Estado del modal de detalle */
     const [modalOpen, setModalOpen] = useState(false);
@@ -286,9 +321,6 @@ const Diaria = () => {
         totalGeneral: 0,
         exportFileName: 'detalle.csv',
     });
-
-    /* Rol del usuario */
-    const [esSuperadmin, setEsSuperadmin] = useState(false);
 
     /* ───────── Carga de formas de pago ───────── */
     const fetchFormas = useCallback(async () => {
@@ -342,7 +374,12 @@ const Diaria = () => {
     useEffect(() => {
         try {
             const token = localStorage.getItem('token');
-            if (!token) return;
+            if (!token) {
+                setEsSuperadmin(false);
+                setEsAdmin(false);
+                return;
+            }
+
             const decoded = jwtDecode(token);
 
             const rolIdRaw =
@@ -350,17 +387,25 @@ const Diaria = () => {
                 decoded.role_id ??
                 decoded.id_rol ??
                 decoded.rolId ??
-                decoded.rol;
+                decoded.rol ??
+                decoded.role ??
+                null;
+
+            const rolNombre = String(decoded.rol_nombre ?? decoded.rol ?? decoded.role ?? decoded.tipo ?? '')
+                .toLowerCase()
+                .trim();
 
             const rolIdNum = Number.isNaN(Number(rolIdRaw)) ? null : Number(rolIdRaw);
 
-            // 0 = superadmin, 1 = admin
-            const isSuperOrAdmin = rolIdNum === 0 || rolIdNum === 1;
+            const isSuper = rolIdNum === 0 || rolNombre === 'superadmin';
+            const isAdm = rolIdNum === 1 || rolNombre === 'admin';
 
-            setEsSuperadmin(isSuperOrAdmin);
+            setEsSuperadmin(isSuper);
+            setEsAdmin(isAdm);
         } catch (err) {
             console.error('Error decodificando token JWT', err);
             setEsSuperadmin(false);
+            setEsAdmin(false);
         }
     }, []);
 
@@ -446,18 +491,32 @@ const Diaria = () => {
     const onCrearMovimiento = async (e) => {
         e.preventDefault();
 
-        if (!esSuperadmin) {
+        if (!puedeRegistrarManual) {
             Swal.fire(
                 'Permiso denegado',
-                'Solo usuarios con rol administrador pueden registrar movimientos manuales en Caja.',
+                'Solo usuarios con rol admin o superadmin pueden registrar movimientos manuales en Caja.',
                 'warning'
             );
             return;
         }
 
+        const tipoNorm = String(nuevo.tipo || '').toLowerCase().trim();
+
+        // ✅ Regla: Admin SOLO apertura/cierre (manual)
+        if (esAdmin && !esSuperadmin) {
+            if (tipoNorm !== 'apertura' && tipoNorm !== 'cierre') {
+                Swal.fire(
+                    'Acción no permitida',
+                    'Como ADMIN solo podés registrar movimientos manuales de APERTURA o CIERRE.',
+                    'warning'
+                );
+                return;
+            }
+        }
+
         try {
             const payload = {
-                tipo: String(nuevo.tipo || '').toLowerCase(),
+                tipo: tipoNorm,
                 monto: String(nuevo.monto || '').trim(),
                 concepto: (nuevo.concepto || '').trim(),
                 fecha,
@@ -805,9 +864,17 @@ const Diaria = () => {
             </div>
 
             {/* Alta rápida: SOLO ADMIN / SUPERADMIN */}
-            {esSuperadmin && (
+            {puedeRegistrarManual && (
                 <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4">
                     <h2 className="mb-3 text-base font-semibold">Registrar movimiento</h2>
+
+                    {esAdmin && !esSuperadmin ? (
+                        <p className="mb-3 text-xs text-slate-600">
+                            Como <span className="font-semibold">ADMIN</span> solo podés registrar{' '}
+                            <span className="font-semibold">Apertura</span> y <span className="font-semibold">Cierre</span>.
+                        </p>
+                    ) : null}
+
                     <form onSubmit={onCrearMovimiento} className="grid grid-cols-1 gap-3 sm:grid-cols-6">
                         <div>
                             <label className="mb-1 block text-xs font-semibold text-slate-600">Tipo</label>
@@ -817,7 +884,7 @@ const Diaria = () => {
                                 onChange={(e) => setNuevo((s) => ({ ...s, tipo: e.target.value }))}
                                 required
                             >
-                                {TIPOS_CAJA.map((t) => (
+                                {tiposAltaPermitidos.map((t) => (
                                     <option key={t} value={t}>
                                         {tipoLabel(t)}
                                     </option>

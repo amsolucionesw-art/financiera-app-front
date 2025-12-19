@@ -59,17 +59,19 @@ const Usuarios = () => {
         cargarMiPerfil();
         cargarZonas();       // zonas
         cargarFormasPago();  // formas de pago
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // ─────────────────────────────────────────
-    // Permisos sobre USUARIOS según miPerfil
+    // Permisos según miPerfil
     // ─────────────────────────────────────────
     const rolActual = miPerfil?.rol_id;
+    const esSuperAdmin = rolActual === 0;
 
     // Solo SUPER ADMIN puede crear / editar / eliminar usuarios
-    const puedeCrearUsuarios = rolActual === 0;
-    const puedeEditarUsuarios = rolActual === 0;
-    const puedeEliminarUsuarios = rolActual === 0;
+    const puedeCrearUsuarios = esSuperAdmin;
+    const puedeEditarUsuarios = esSuperAdmin;
+    const puedeEliminarUsuarios = esSuperAdmin;
 
     const handleEliminar = async (usuario) => {
         if (!puedeEliminarUsuarios) {
@@ -162,12 +164,9 @@ const Usuarios = () => {
     const [loadingZonas, setLoadingZonas] = useState(true);
     const [currentPageZonas, setCurrentPageZonas] = useState(1);
 
-    const puedeGestionarZonas = useMemo(() => {
-        const rol = miPerfil?.rol_id;
-        return rol === 0 || rol === 1; // crear/editar: superadmin y admin
-    }, [miPerfil]);
-
-    const puedeEliminarZonas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]); // eliminar: solo superadmin
+    // ✅ Solo SUPERADMIN puede crear/editar/eliminar Zonas (según lo que definiste ayer)
+    const puedeGestionarZonas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]);
+    const puedeEliminarZonas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]);
 
     const cargarZonas = async () => {
         try {
@@ -181,7 +180,15 @@ const Usuarios = () => {
         }
     };
 
+    const guardSinPermiso = async (mensaje = "Solo el Super Administrador puede realizar esta acción.") => {
+        await Swal.fire("Sin permisos", mensaje, "info");
+    };
+
     const handleCrearZona = async () => {
+        if (!puedeGestionarZonas) {
+            return guardSinPermiso("Solo el Super Administrador puede crear zonas.");
+        }
+
         const { value: nombre, isConfirmed } = await Swal.fire({
             title: "Nueva zona",
             input: "text",
@@ -217,6 +224,10 @@ const Usuarios = () => {
     };
 
     const handleEditarZona = async (z) => {
+        if (!puedeGestionarZonas) {
+            return guardSinPermiso("Solo el Super Administrador puede editar zonas.");
+        }
+
         const { value: nombre, isConfirmed } = await Swal.fire({
             title: "Editar zona",
             input: "text",
@@ -254,6 +265,10 @@ const Usuarios = () => {
     };
 
     const handleEliminarZona = async (z) => {
+        if (!puedeEliminarZonas) {
+            return guardSinPermiso("Solo el Super Administrador puede eliminar zonas.");
+        }
+
         const { isConfirmed } = await Swal.fire({
             title: "¿Eliminar zona?",
             text: `Se eliminará la zona "${z?.nombre}".`,
@@ -323,12 +338,9 @@ const Usuarios = () => {
     const [loadingFormas, setLoadingFormas] = useState(true);
     const [currentPageFormas, setCurrentPageFormas] = useState(1);
 
-    const puedeGestionarFormas = useMemo(() => {
-        const rol = miPerfil?.rol_id;
-        return rol === 0 || rol === 1; // crear/editar: superadmin y admin
-    }, [miPerfil]);
-
-    const puedeEliminarFormas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]); // eliminar: solo superadmin (opcional)
+    // ✅ Solo SUPERADMIN puede crear/editar/eliminar Formas de pago
+    const puedeGestionarFormas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]);
+    const puedeEliminarFormas = useMemo(() => miPerfil?.rol_id === 0, [miPerfil]);
 
     const cargarFormasPago = async () => {
         try {
@@ -343,6 +355,10 @@ const Usuarios = () => {
     };
 
     const handleCrearFormaPago = async () => {
+        if (!puedeGestionarFormas) {
+            return guardSinPermiso("Solo el Super Administrador puede crear formas de pago.");
+        }
+
         const { value: nombre, isConfirmed } = await Swal.fire({
             title: "Nueva forma de pago",
             input: "text",
@@ -378,6 +394,10 @@ const Usuarios = () => {
     };
 
     const handleEditarFormaPago = async (f) => {
+        if (!puedeGestionarFormas) {
+            return guardSinPermiso("Solo el Super Administrador puede editar formas de pago.");
+        }
+
         const { value: nombre, isConfirmed } = await Swal.fire({
             title: "Editar forma de pago",
             input: "text",
@@ -415,6 +435,10 @@ const Usuarios = () => {
     };
 
     const handleEliminarFormaPago = async (f) => {
+        if (!puedeEliminarFormas) {
+            return guardSinPermiso("Solo el Super Administrador puede eliminar formas de pago.");
+        }
+
         const { isConfirmed } = await Swal.fire({
             title: "¿Eliminar forma de pago?",
             text: `Se eliminará la forma de pago "${f?.nombre}".`,

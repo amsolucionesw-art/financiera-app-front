@@ -1,7 +1,7 @@
 // src/pages/CajaHistorial.jsx
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import Swal from 'sweetalert2';
-import { obtenerMovimientos, TIPOS_CAJA } from '../services/cajaService';
+import { obtenerMovimientos, TIPOS_CAJA, descargarMovimientosExcel } from '../services/cajaService';
 import { obtenerFormasDePago } from '../services/cuotaService';
 import { exportToCSV } from '../utils/exporters';
 import { jwtDecode } from 'jwt-decode';
@@ -44,6 +44,17 @@ const lastNDaysRange = (n = 3) => {
     const hoy = new Date();
     const hasta = toYMD(hoy);
     const desde = addDaysUTC(hasta, -(n - 1));
+    return { desde, hasta };
+};
+
+const ensureRange = (desde, hasta) => {
+    if (desde && hasta) {
+        const a = new Date(`${desde}T00:00:00Z`);
+        const b = new Date(`${hasta}T00:00:00Z`);
+        if (!Number.isNaN(a.getTime()) && !Number.isNaN(b.getTime()) && a > b) {
+            return { desde: hasta, hasta: desde };
+        }
+    }
     return { desde, hasta };
 };
 
@@ -137,9 +148,17 @@ const montoTextClass = (tipo) => {
     return 'text-slate-800';
 };
 
-/* ============ Helper: detectar superadmin desde token ============ */
-const esSuperadminDesdeToken = (decoded) => {
-    if (!decoded || typeof decoded !== 'object') return false;
+/* ============ Helper: roles desde token ============ */
+const resolveRol = (decoded) => {
+    if (!decoded || typeof decoded !== 'object') return { rolId: null, rolStr: '' };
+
+    const rolIdRaw = decoded.rol_id ?? decoded.usuario?.rol_id ?? decoded.role_id ?? decoded.usuario?.role_id ?? null;
+    const rolId =
+        typeof rolIdRaw === 'number'
+            ? rolIdRaw
+            : (typeof rolIdRaw === 'string' && /^\d+$/.test(rolIdRaw))
+                ? Number(rolIdRaw)
+                : null;
 
     const rawRol =
         decoded.rol ??
@@ -155,16 +174,15 @@ const esSuperadminDesdeToken = (decoded) => {
         '';
 
     const rolStr = String(rawRol || '').toLowerCase();
-    if (rolStr === 'superadmin') return true;
 
-    const rolIdRaw = decoded.rol_id ?? decoded.usuario?.rol_id;
-    const rolId = typeof rolIdRaw === 'number' ? rolIdRaw : Number(rolIdRaw);
+    return { rolId: Number.isFinite(rolId) ? rolId : null, rolStr };
+};
 
-    if (Number.isFinite(rolId)) {
-        if (rolId === 0) return true; // superadmin = 0
-        // if (rolId === 1) return true; // habilitar si quisieras admin también
-    }
-
+const canVerHistorialDesdeToken = (decoded) => {
+    const { rolId, rolStr } = resolveRol(decoded);
+    // superadmin=0, admin=1
+    if (rolId === 0 || rolStr === 'superadmin') return true;
+    if (rolId === 1 || rolStr === 'admin') return true;
     return false;
 };
 
@@ -179,10 +197,15 @@ const Historial = () => {
     const [anio, setAnio] = useState(yInit);
     const [mes, setMes] = useState(mInit);
 
+    /* ✅ Rango personalizado */
+    const [fechaDesde, setFechaDesde] = useState('');
+    const [fechaHasta, setFechaHasta] = useState('');
+
     /* ----- Datos ----- */
     const [formas, setFormas] = useState([]);
     const [movs, setMovs] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [exportingXlsx, setExportingXlsx] = useState(false);
 
     /* ----- Filtros ----- */
     const [filtroTipos, setFiltroTipos] = useState([]);
@@ -195,7 +218,7 @@ const Historial = () => {
     const [filtrosOpen, setFiltrosOpen] = useState(true);
 
     /* ----- Rol / permisos ----- */
-    const [esSuperadmin, setEsSuperadmin] = useState(false);
+    const [canVerHistorial, setCanVerHistorial] = useState(false);
 
     /* ----- Paginación (front) ----- */
     const [page, setPage] = useState(1);
@@ -211,6 +234,45 @@ const Historial = () => {
         return movs.slice(start, end);
     }, [movs, currentPage, pageSize]);
 
+    const getRangoActual = useCallback(() => {
+        // 1) Rango personalizado (si se setea cualquiera de los dos)
+        if (fechaDesde || fechaHasta) {
+            const d = fechaDesde || fechaHasta;
+            const h = fechaHasta || fechaDesde;
+            const fixed = ensureRange(d, h);
+            return { desde: fixed.desde, hasta: fixed.hasta, modo: 'rango' };
+        }
+
+        // 2) Mes completo
+        if (mostrarMesCompleto) {
+            return { desde: firstDay(anio, mes), hasta: lastDay(anio, mes), modo: 'mes' };
+        }
+
+        // 3) Default últimos 3 días
+        const { desde, hasta } = lastNDaysRange(3);
+        return { desde, hasta, modo: 'ultimos3' };
+    }, [fechaDesde, fechaHasta, mostrarMesCompleto, anio, mes]);
+
+    const buildParams = useCallback(() => {
+        const params = {};
+
+        const rango = getRangoActual();
+        if (rango?.desde) params.desde = rango.desde;
+        if (rango?.hasta) params.hasta = rango.hasta;
+
+        // límites: el backend capea, pero mantenemos intención
+        if (rango.modo === 'mes' || rango.modo === 'rango') params.limit = 2000;
+        else params.limit = 500;
+
+        if (filtroTipos?.length) params.tipo = filtroTipos;
+        if (formaPagoId !== '') params.forma_pago_id = formaPagoId;
+        if (categorias?.length) params.referencia_tipo = categorias;
+        if (refId && String(refId).trim() !== '') params.referencia_id = refId;
+        if (q && q.trim() !== '') params.q = q.trim();
+
+        return params;
+    }, [getRangoActual, filtroTipos, formaPagoId, categorias, refId, q]);
+
     /* ----- Efectos ----- */
     const fetchFormas = useCallback(async () => {
         try {
@@ -224,22 +286,7 @@ const Historial = () => {
     const cargarMovimientos = useCallback(async () => {
         setLoading(true);
         try {
-            const params = {};
-            if (mostrarMesCompleto) {
-                params.desde = firstDay(anio, mes);
-                params.hasta = lastDay(anio, mes);
-                params.limit = 2000;
-            } else {
-                const { desde, hasta } = lastNDaysRange(3);
-                params.desde = desde;
-                params.hasta = hasta;
-                params.limit = 500;
-            }
-            if (filtroTipos?.length) params.tipo = filtroTipos;
-            if (formaPagoId !== '') params.forma_pago_id = formaPagoId;
-            if (categorias?.length) params.referencia_tipo = categorias;
-            if (refId && String(refId).trim() !== '') params.referencia_id = refId;
-            if (q && q.trim() !== '') params.q = q.trim();
+            const params = buildParams();
 
             const data = await obtenerMovimientos(params);
             setMovs(Array.isArray(data) ? data : []);
@@ -250,22 +297,22 @@ const Historial = () => {
         } finally {
             setLoading(false);
         }
-    }, [mostrarMesCompleto, anio, mes, filtroTipos, formaPagoId, categorias, refId, q]);
+    }, [buildParams]);
 
     // Decodificar token y determinar rol
     useEffect(() => {
         try {
             const token = localStorage.getItem('token');
             if (!token) {
-                setEsSuperadmin(false);
+                setCanVerHistorial(false);
                 return;
             }
             const decoded = jwtDecode(token);
             console.log('[CajaHistorial] decoded token:', decoded);
-            setEsSuperadmin(esSuperadminDesdeToken(decoded));
+            setCanVerHistorial(canVerHistorialDesdeToken(decoded));
         } catch (err) {
             console.error('Error decodificando token JWT', err);
-            setEsSuperadmin(false);
+            setCanVerHistorial(false);
         }
     }, []);
 
@@ -274,9 +321,9 @@ const Historial = () => {
     }, [fetchFormas]);
 
     useEffect(() => {
-        if (!esSuperadmin) return;
+        if (!canVerHistorial) return;
         cargarMovimientos();
-    }, [cargarMovimientos, esSuperadmin]);
+    }, [cargarMovimientos, canVerHistorial]);
 
     /* ----- Acciones ----- */
     const exportarCSV = () => {
@@ -298,12 +345,8 @@ const Historial = () => {
             monto: Number(m.monto || 0).toFixed(2).replace('.', ','),
         }));
 
-        const label = mostrarMesCompleto
-            ? `${anio}-${String(mes).padStart(2, '0')}`
-            : (() => {
-                  const { desde, hasta } = lastNDaysRange(3);
-                  return `${desde}_a_${hasta}`;
-              })();
+        const rango = getRangoActual();
+        const label = `${rango.desde}_a_${rango.hasta}`;
 
         exportToCSV(`caja-historial-${label}.csv`, rows, [
             'fecha',
@@ -319,18 +362,55 @@ const Historial = () => {
         ]);
     };
 
+    const exportarExcel = async () => {
+        try {
+            setExportingXlsx(true);
+
+            const params = buildParams();
+            // el export no necesita limit/page
+            delete params.limit;
+            delete params.page;
+
+            const rango = getRangoActual();
+            const fname = `historial_caja_${rango.desde}_a_${rango.hasta}.xlsx`;
+
+            // ✅ Descarga robusta (evita bajar HTML/JSON como .xlsx)
+            await descargarMovimientosExcel(params, { nombreArchivo: fname });
+        } catch (err) {
+            console.error('Error export Excel historial', err);
+            Swal.fire('Error', err?.message || 'No se pudo exportar el Excel', 'error');
+        } finally {
+            setExportingXlsx(false);
+        }
+    };
+
     const limpiarFiltros = () => {
         setFiltroTipos([]);
         setFormaPagoId('');
         setCategorias([]);
         setRefId('');
         setQ('');
+        setFechaDesde('');
+        setFechaHasta('');
         setPage(1);
     };
 
     /* ----- Resumen de filtros activos (chips) ----- */
     const chipsFiltros = useMemo(() => {
         const chips = [];
+
+        const rango = getRangoActual();
+        if (rango?.desde && rango?.hasta) {
+            chips.push({
+                key: `rango:${rango.desde}:${rango.hasta}`,
+                label: `Fechas: ${rango.desde} → ${rango.hasta}`,
+                onClear: () => {
+                    setFechaDesde('');
+                    setFechaHasta('');
+                },
+            });
+        }
+
         if (filtroTipos.length) {
             chips.push(
                 ...filtroTipos.map((t) => ({
@@ -377,21 +457,23 @@ const Historial = () => {
             });
         }
         return chips;
-    }, [filtroTipos, formaPagoId, categorias, refId, q, formas]);
+    }, [getRangoActual, filtroTipos, formaPagoId, categorias, refId, q, formas]);
 
     /* ============ UI ============ */
 
-    if (!esSuperadmin) {
+    if (!canVerHistorial) {
         return (
             <div className="p-4 sm:p-6">
                 <h1 className="text-xl font-semibold">Caja – Historial</h1>
                 <p className="mt-2 text-sm text-slate-600">
-                    Solo el usuario <strong>superadmin</strong> puede acceder al historial de
+                    Solo usuarios con rol <strong>admin</strong> o <strong>superadmin</strong> pueden acceder al historial de
                     movimientos de caja.
                 </p>
             </div>
         );
     }
+
+    const rangoUI = getRangoActual();
 
     return (
         <div className="p-4 sm:p-6">
@@ -400,12 +482,12 @@ const Historial = () => {
                 <div>
                     <h1 className="text-xl font-semibold">Caja – Historial</h1>
                     <p className="text-sm text-slate-600">
-                        Por defecto se muestran los <strong>últimos 3 días</strong>. Activá “Mes completo”
-                        para consultar un período mensual.
+                        Período actual: <strong>{rangoUI.desde}</strong> a <strong>{rangoUI.hasta}</strong>.
+                        {' '}Usá “Desde/Hasta” para un rango personalizado.
                     </p>
                 </div>
 
-                {/* Período */}
+                {/* Período rápido */}
                 <div className="flex flex-wrap items-end gap-3">
                     <div className="flex items-center gap-2">
                         <input
@@ -413,12 +495,19 @@ const Historial = () => {
                             type="checkbox"
                             className="h-4 w-4 rounded border-slate-300"
                             checked={mostrarMesCompleto}
-                            onChange={(e) => setMostrarMesCompleto(e.target.checked)}
+                            onChange={(e) => {
+                                const checked = e.target.checked;
+                                setMostrarMesCompleto(checked);
+
+                                // ✅ UX: si activa mes completo, limpio rango personalizado (para que no lo "pise")
+                                if (checked) {
+                                    setFechaDesde('');
+                                    setFechaHasta('');
+                                }
+                            }}
                         />
                         <label htmlFor="toggle-mes" className="text-sm">
-                            {mostrarMesCompleto
-                                ? 'Mostrando mes completo'
-                                : 'Mostrar mes completo'}
+                            {mostrarMesCompleto ? 'Mostrando mes completo' : 'Mostrar mes completo'}
                         </label>
                     </div>
 
@@ -436,9 +525,7 @@ const Historial = () => {
                                 value={anio}
                                 onChange={(e) =>
                                     setAnio(
-                                        Number(
-                                            e.target.value || new Date().getFullYear(),
-                                        ),
+                                        Number(e.target.value || new Date().getFullYear()),
                                     )
                                 }
                             />
@@ -473,16 +560,29 @@ const Historial = () => {
                     onClick={cargarMovimientos}
                     className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
                     title="Actualizar resultados con los filtros actuales"
+                    disabled={loading}
                 >
-                    Refrescar
+                    {loading ? 'Cargando…' : 'Refrescar'}
                 </button>
+
+                <button
+                    onClick={exportarExcel}
+                    className="rounded-md bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+                    title="Exportar a Excel aplicando los filtros y fechas actuales"
+                    disabled={exportingXlsx || loading}
+                >
+                    {exportingXlsx ? 'Exportando Excel…' : 'Exportar Excel'}
+                </button>
+
                 <button
                     onClick={exportarCSV}
                     className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                    title="Exportar la tabla visible a CSV"
+                    title="Exportar la tabla cargada (lo que está en memoria) a CSV"
+                    disabled={loading}
                 >
-                    Exportar CSV ({mostrarMesCompleto ? 'mes completo' : 'últimos 3 días'})
+                    Exportar CSV
                 </button>
+
                 <button
                     onClick={() => setFiltrosOpen((v) => !v)}
                     className="ml-auto rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
@@ -496,6 +596,37 @@ const Historial = () => {
             {filtrosOpen && (
                 <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3">
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">
+                        {/* Desde/Hasta */}
+                        <div className="sm:col-span-3">
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">
+                                Desde
+                            </label>
+                            <input
+                                type="date"
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                value={fechaDesde}
+                                onChange={(e) => {
+                                    setFechaDesde(e.target.value);
+                                    // ✅ UX: si usa rango, desactiva mes completo para evitar “doble verdad”
+                                    if (e.target.value) setMostrarMesCompleto(false);
+                                }}
+                            />
+                        </div>
+                        <div className="sm:col-span-3">
+                            <label className="mb-1 block text-xs font-semibold text-slate-600">
+                                Hasta
+                            </label>
+                            <input
+                                type="date"
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                value={fechaHasta}
+                                onChange={(e) => {
+                                    setFechaHasta(e.target.value);
+                                    if (e.target.value) setMostrarMesCompleto(false);
+                                }}
+                            />
+                        </div>
+
                         {/* Tipos */}
                         <div className="sm:col-span-2">
                             <label className="mb-1 block text-xs font-semibold text-slate-600">
@@ -597,15 +728,32 @@ const Historial = () => {
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                         <button
                             onClick={cargarMovimientos}
-                            className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900"
+                            className="rounded-md bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-900 disabled:opacity-60"
+                            disabled={loading}
                         >
                             Aplicar filtros
                         </button>
                         <button
                             onClick={limpiarFiltros}
                             className="rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                            disabled={loading}
                         >
                             Limpiar
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const r = lastNDaysRange(3);
+                                setMostrarMesCompleto(false);
+                                setFechaDesde(r.desde);
+                                setFechaHasta(r.hasta);
+                            }}
+                            className="ml-auto rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                            title="Setea el rango a últimos 3 días"
+                            disabled={loading}
+                        >
+                            Últimos 3 días
                         </button>
                     </div>
                 </div>
@@ -779,6 +927,9 @@ const Historial = () => {
                     </div>
                 </div>
             </div>
+
+            {/* (Opcional) Mini resumen de rango, por si querés usar fmtARS más adelante */}
+            {/* <div className="mt-3 text-xs text-slate-500">Rango activo: {rangoUI.desde} → {rangoUI.hasta}</div> */}
         </div>
     );
 };

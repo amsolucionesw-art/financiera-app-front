@@ -6,7 +6,15 @@ import { useInformeData } from '../hooks/useInformeData';
 import InformeFilters from '../components/InformeFilters';
 import InformeTable from '../components/InformeTable';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+/**
+ * Construye base de API de forma robusta:
+ * - Si VITE_API_URL ya termina con VITE_API_PREFIX, NO duplica.
+ * - Si VITE_API_URL no incluye el prefijo, lo agrega.
+ * - Evita /api/api y evita pegarle a /informes sin /api cuando corresponde.
+ */
+const RAW_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/+$/, '');
+const PREFIX = (import.meta.env.VITE_API_PREFIX || '/api').replace(/\/+$/, '');
+const API_BASE = PREFIX && !RAW_BASE.endsWith(PREFIX) ? `${RAW_BASE}${PREFIX}` : RAW_BASE;
 
 const Informes = () => {
     const {
@@ -16,40 +24,40 @@ const Informes = () => {
         filters,
         setFilters,
         resetFilters,
-        // exportExcel, // ← dejamos de usar el export del hook (cliente) para priorizar el backend
         hasSearched,
     } = useInformeData();
 
     const hasResults = Array.isArray(data) && data.length > 0;
 
-    /** 
-     * Construye los params para exportar XLSX desde el backend de la MISMA forma
-     * en que el hook arma los params para la consulta (clave para no “mismatch”):
-     * - Si hay {desde,hasta} → enviamos `fechaVencimiento=YYYY-MM-DD,YYYY-MM-DD`
-     * - Si hoy === true → enviamos hoy=true
-     * - Quitamos claves vacías
+    /**
+     * Params para export backend:
+     * - manda desde/hasta (backend los usa así)
+     * - manda hoy=true si corresponde
+     * - manda rangoFechaCredito SOLO si tipo=creditos
+     * - limpia vacíos
      */
     const exportParams = useMemo(() => {
         const f = filters || {};
         const {
+            tipo,
             desde,
             hasta,
             hoy,
+            rangoFechaCredito,
             ...rest
         } = f;
 
         const params = {
             ...rest,
-            // Igual que en el hook: si hay rango lo mapeamos a "fechaVencimiento"
-            ...(desde || hasta
-                ? { fechaVencimiento: `${desde || ''},${hasta || ''}` }
-                : {}),
+            tipo,
+            ...(desde ? { desde } : {}),
+            ...(hasta ? { hasta } : {}),
             ...(hoy ? { hoy: true } : {}),
+            ...(tipo === 'creditos' && rangoFechaCredito ? { rangoFechaCredito } : {}),
             format: 'xlsx',
-            title: 'Informe'
+            title: 'Informe',
         };
 
-        // Limpiar vacíos
         Object.keys(params).forEach((k) => {
             if (params[k] === '' || params[k] == null) delete params[k];
         });
@@ -59,13 +67,12 @@ const Informes = () => {
 
     /**
      * Descarga Excel desde el backend abriendo una nueva pestaña con la query.
-     * Respeta todos los filtros actuales (los mismos que usa el hook para consultar).
      */
     const onExportBackend = useCallback(() => {
         if (!hasResults) return;
+
         const qs = new URLSearchParams();
         Object.entries(exportParams).forEach(([k, v]) => {
-            // booleanos/arrays seguros
             if (Array.isArray(v)) {
                 v.forEach((item) => qs.append(k, item));
             } else if (typeof v === 'boolean') {
@@ -74,8 +81,8 @@ const Informes = () => {
                 qs.set(k, String(v));
             }
         });
-        // Endpoint único: /informes
-        const url = `${API_URL}/informes?${qs.toString()}`;
+
+        const url = `${API_BASE}/informes?${qs.toString()}`;
         window.open(url, '_blank', 'noopener,noreferrer');
     }, [exportParams, hasResults]);
 
@@ -84,7 +91,6 @@ const Informes = () => {
             <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h1 className="text-xl font-semibold sm:text-2xl">Informes</h1>
 
-                {/* Acciones superiores en desktop; bajan en mobile */}
                 <div className="flex flex-wrap items-center gap-3">
                     <button
                         type="button"
@@ -105,7 +111,6 @@ const Informes = () => {
                 </div>
             </header>
 
-            {/* Filtros */}
             <div className="rounded-lg border border-gray-200 bg-white p-3 sm:p-4">
                 <InformeFilters
                     filters={filters}
@@ -114,9 +119,7 @@ const Informes = () => {
                 />
             </div>
 
-            {/* Estado vacío / tabla */}
             <div className="min-h-[120px]">
-                {/* Solo mostrar mensaje o tabla si ya se pulsó "Buscar" */}
                 {hasSearched && !isFetching && !hasResults && (
                     <p className="py-8 text-center text-sm text-gray-500">
                         No se encontraron registros para estos filtros.

@@ -24,6 +24,20 @@ const MODALIDADES = [
   { value: 'refinanciado', label: 'Refinanciado' }
 ];
 
+// ✅ Default real (backend también cae a esto si no mandás nada)
+const DEFAULT_RANGO_CREDITO = 'acreditacion_compromiso';
+
+// ✅ Opciones reales según el modelo Credito:
+// - fecha_solicitud
+// - fecha_acreditacion
+// - fecha_compromiso_pago
+const RANGO_FECHA_CREDITO_OPTS = [
+  { value: DEFAULT_RANGO_CREDITO, label: 'Acreditación o Compromiso (recomendado)' },
+  { value: 'solicitud', label: 'Solicitud' },
+  { value: 'acreditacion', label: 'Acreditación' },
+  { value: 'compromiso', label: 'Compromiso de pago' }
+];
+
 const InformeFilters = ({ filters, onApply, onReset }) => {
   const [cobradores, setCobradores] = useState([]);
   const [clientesList, setClientesList] = useState([]);
@@ -44,23 +58,39 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
   }, []);
 
   const { control, handleSubmit, reset } = useForm({
-    defaultValues: filters
+    defaultValues: {
+      ...filters,
+      // defensivo: si no viene, ponemos el recomendado
+      rangoFechaCredito: filters?.rangoFechaCredito || DEFAULT_RANGO_CREDITO
+    }
   });
 
   // Mantener el form sincronizado si cambian filtros externos
   useEffect(() => {
-    reset(filters);
+    reset({
+      ...filters,
+      rangoFechaCredito: filters?.rangoFechaCredito || DEFAULT_RANGO_CREDITO
+    });
   }, [filters, reset]);
 
   const tipo = useWatch({ control, name: 'tipo' });
   const hoy = useWatch({ control, name: 'hoy' });
+
+  // ✅ Miramos el selector de rango (solo aplica a créditos, pero lo watch-eamos igual)
+  const rangoFechaCredito = useWatch({ control, name: 'rangoFechaCredito' });
 
   const showCliente = tipo === 'creditos' || tipo === 'cuotas';
   const showEstadoCredito = tipo === 'creditos';
   const showModalidad = tipo === 'creditos';
   const showEstadoCuota = tipo === 'cuotas';
   const showHoy = tipo === 'cuotas';
-  const showRangoFechas = tipo === 'cuotas';
+
+  // ✅ Rango de fechas para CUOTAS y CRÉDITOS
+  const showRangoFechas = tipo === 'cuotas' || tipo === 'creditos';
+
+  // ✅ Selector solo para Créditos
+  const showRangoFechaCreditoSelect = tipo === 'creditos';
+
   const showFormaPago = tipo === 'cuotas';
   const showSearchQ = tipo === 'creditos' || tipo === 'cuotas';
 
@@ -68,12 +98,17 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
     const params = { ...values };
     const tipoActual = params.tipo;
 
-    // ───────────────── Validación de rango de fechas (solo cuotas) ─────────────────
+    const isCuotas = tipoActual === 'cuotas';
+    const isCreditos = tipoActual === 'creditos';
+    const isClientes = tipoActual === 'clientes';
+
+    // ───────────────── Validación de rango de fechas (cuotas y créditos) ─────────────────
+    // En cuotas, si "hoy" está activo, ignoramos el rango.
     if (
-      tipoActual === 'cuotas' &&
+      (isCuotas || isCreditos) &&
       values.desde &&
       values.hasta &&
-      !values.hoy
+      !(isCuotas && values.hoy)
     ) {
       if (values.desde > values.hasta) {
         Swal.fire(
@@ -86,7 +121,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
     }
 
     // ───────────────── Limpieza según tipo de informe ─────────────────
-    if (tipoActual === 'clientes') {
+    if (isClientes) {
       // En clientes no aplican estos filtros
       delete params.estadoCredito;
       delete params.estadoCuota;
@@ -95,20 +130,24 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
       delete params.desde;
       delete params.hasta;
       delete params.modalidad;
-    } else if (tipoActual === 'creditos') {
-      // En créditos no hay cuotas ni fechas de vencimiento directas ni forma de pago
+      delete params.q; // no se usa en clientes en tu backend actual
+      delete params.rangoFechaCredito;
+    } else if (isCreditos) {
+      // En créditos: NO hay cuotas ni forma de pago ni "hoy"
       delete params.estadoCuota;
       delete params.formaPagoId;
       delete params.hoy;
-      delete params.desde;
-      delete params.hasta;
-      // modalidad y estadoCredito sí aplican
-    } else if (tipoActual === 'cuotas') {
-      // En cuotas no tiene sentido "con créditos pendientes" ni estado de crédito
+      // ✅ PERMITIMOS desde/hasta para créditos
+      // ✅ PERMITIMOS rangoFechaCredito para créditos (con default)
+      if (!params.rangoFechaCredito) params.rangoFechaCredito = DEFAULT_RANGO_CREDITO;
+    } else if (isCuotas) {
+      // En cuotas: no tiene sentido "con créditos pendientes" ni estado de crédito
       delete params.conCreditosPendientes;
       delete params.estadoCredito;
       // Modalidad se filtra a nivel crédito, aquí no se usa directamente
       delete params.modalidad;
+      // En cuotas no aplica este selector
+      delete params.rangoFechaCredito;
     }
 
     // ───────────────── Limpieza de campos vacíos / falsy ─────────────────
@@ -123,12 +162,15 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
     if (!params.q) delete params.q;
     if (!params.zonaId) delete params.zonaId;
 
-    // Manejo consistente de fechas según el tipo de informe
-    if (!showRangoFechas) {
+    // Selector de rango: si por algún motivo viene vacío, lo sacamos (backend tiene default igual)
+    if (!params.rangoFechaCredito) delete params.rangoFechaCredito;
+
+    // Fechas: solo créditos/cuotas. En cuotas, si hoy=true, anula rango.
+    if (!(isCuotas || isCreditos)) {
       delete params.desde;
       delete params.hasta;
     }
-    if (params.hoy) {
+    if (isCuotas && params.hoy) {
       delete params.desde;
       delete params.hasta;
     }
@@ -137,17 +179,44 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
   };
 
   const resetAll = () => {
-    reset(defaultFilters);
+    // Reset defensivo: si defaultFilters no incluye rangoFechaCredito, lo inyectamos
+    reset({
+      ...defaultFilters,
+      rangoFechaCredito: DEFAULT_RANGO_CREDITO
+    });
     onReset();
   };
 
   const qPlaceholder = useMemo(
     () =>
       tipo === 'creditos'
-        ? 'Nombre, apellido, DNI o #crédito…'
-        : 'Nombre, apellido, DNI o #crédito/#cuota…',
+        ? 'Nombre, apellido o #crédito…'
+        : 'Nombre, apellido o #crédito/#cuota…',
     [tipo]
   );
+
+  // Labels para "Desde/Hasta" según tipo y selector de rango
+  const labelDesde = useMemo(() => {
+    if (tipo !== 'creditos') return 'Desde';
+    switch (String(rangoFechaCredito || DEFAULT_RANGO_CREDITO)) {
+      case 'solicitud': return 'Desde (Solicitud)';
+      case 'acreditacion': return 'Desde (Acreditación)';
+      case 'compromiso': return 'Desde (Compromiso)';
+      default: return 'Desde (Acred./Comp.)';
+    }
+  }, [tipo, rangoFechaCredito]);
+
+  const labelHasta = useMemo(() => {
+    if (tipo !== 'creditos') return 'Hasta';
+    switch (String(rangoFechaCredito || DEFAULT_RANGO_CREDITO)) {
+      case 'solicitud': return 'Hasta (Solicitud)';
+      case 'acreditacion': return 'Hasta (Acreditación)';
+      case 'compromiso': return 'Hasta (Compromiso)';
+      default: return 'Hasta (Acred./Comp.)';
+    }
+  }, [tipo, rangoFechaCredito]);
+
+  const disableDateByHoy = tipo === 'cuotas' && !!hoy;
 
   return (
     <form
@@ -289,6 +358,26 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
         </div>
       )}
 
+      {/* ✅ Selector del tipo de fecha para rango (solo Créditos) */}
+      {showRangoFechaCreditoSelect && (
+        <div className={groupBase}>
+          <label className={labelBase}>Rango por fecha</label>
+          <Controller
+            control={control}
+            name="rangoFechaCredito"
+            render={({ field }) => (
+              <select {...field} className={inputBase}>
+                {RANGO_FECHA_CREDITO_OPTS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          />
+        </div>
+      )}
+
       {/* Con créditos pendientes */}
       {(tipo === 'clientes' || tipo === 'creditos') && (
         <div className="flex items-center gap-2">
@@ -335,7 +424,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
         </div>
       )}
 
-      {/* Solo vencimientos hoy */}
+      {/* Solo vencimientos hoy (solo cuotas) */}
       {showHoy && (
         <div className="flex items-center gap-2">
           <Controller
@@ -359,11 +448,11 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
         </div>
       )}
 
-      {/* Rango fechas */}
+      {/* Rango fechas (cuotas y créditos) */}
       {showRangoFechas && (
         <>
           <div className={groupBase}>
-            <label className={labelBase}>Desde</label>
+            <label className={labelBase}>{labelDesde}</label>
             <Controller
               control={control}
               name="desde"
@@ -372,9 +461,9 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
                   {...field}
                   type="date"
                   className={inputBase}
-                  disabled={!!hoy}
+                  disabled={disableDateByHoy}
                   title={
-                    hoy
+                    disableDateByHoy
                       ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"'
                       : ''
                   }
@@ -383,7 +472,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
             />
           </div>
           <div className={groupBase}>
-            <label className={labelBase}>Hasta</label>
+            <label className={labelBase}>{labelHasta}</label>
             <Controller
               control={control}
               name="hasta"
@@ -392,9 +481,9 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
                   {...field}
                   type="date"
                   className={inputBase}
-                  disabled={!!hoy}
+                  disabled={disableDateByHoy}
                   title={
-                    hoy
+                    disableDateByHoy
                       ? 'Deshabilitado al seleccionar "Solo vencimientos hoy"'
                       : ''
                   }
