@@ -16,7 +16,7 @@ const buildURL = (path, params = null) => {
         const urlAbs = new URL(String(path));
         Object.entries(params).forEach(([k, v]) => {
             if (v === undefined || v === null) return;
-            if (Array.isArray(v)) v.forEach(item => urlAbs.searchParams.append(k, item));
+            if (Array.isArray(v)) v.forEach((item) => urlAbs.searchParams.append(k, item));
             else urlAbs.searchParams.append(k, v);
         });
         return urlAbs.toString();
@@ -29,7 +29,7 @@ const buildURL = (path, params = null) => {
     const url = new URL(full);
     Object.entries(params).forEach(([k, v]) => {
         if (v === undefined || v === null) return;
-        if (Array.isArray(v)) v.forEach(item => url.searchParams.append(k, item));
+        if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
         else url.searchParams.append(k, v);
     });
     return url.toString();
@@ -42,8 +42,8 @@ const buildURL = (path, params = null) => {
  */
 export const getAuthHeaders = () => {
     const headers = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
     };
 
     const token = localStorage.getItem('token');
@@ -61,7 +61,7 @@ export const withQuery = (path, params = {}) => {
     const qs = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => {
         if (v === undefined || v === null) return;
-        if (Array.isArray(v)) v.forEach(item => qs.append(k, item));
+        if (Array.isArray(v)) v.forEach((item) => qs.append(k, item));
         else qs.append(k, v);
     });
     const q = qs.toString();
@@ -74,16 +74,23 @@ export const withQuery = (path, params = {}) => {
  *  - Soporta options.params para armar query string automáticamente.
  *  - Adjunta error.payload y error.errors (si vienen de la API) para la UI.
  *  - Cuerpos tipo FormData/Blob/URLSearchParams no se serializan ni se fuerza Content-Type.
+ *  - ✅ Soporta options.fullResponse=true para NO "desarmar" { success, message, data }.
  * NOTA: **NO** envía cookies/sesión; sólo usa Bearer tokens.
  */
 export async function apiFetch(path, options = {}) {
-    const { headers: customHeaders, body, params, ...rest } = options;
+    const {
+        headers: customHeaders,
+        body,
+        params,
+        fullResponse = false, // ✅ nuevo: permite recuperar {success,message,data}
+        ...rest
+    } = options;
 
     // Detectar si el body es "especial" (no JSON)
     const isSpecialBody =
-        typeof FormData !== 'undefined' && body instanceof FormData ||
-        typeof Blob !== 'undefined' && body instanceof Blob ||
-        typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams ||
+        (typeof FormData !== 'undefined' && body instanceof FormData) ||
+        (typeof Blob !== 'undefined' && body instanceof Blob) ||
+        (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) ||
         body instanceof ArrayBuffer;
 
     // Merge headers
@@ -105,7 +112,7 @@ export async function apiFetch(path, options = {}) {
         headers,
         // credentials: 'include',   <-- no se usa para evitar problemas CORS
         body: finalBody,
-        ...rest
+        ...rest,
     });
 
     // 204 No Content
@@ -130,10 +137,7 @@ export async function apiFetch(path, options = {}) {
     }
 
     if (!res.ok) {
-        const message =
-            (payload && (payload.message || payload.error)) ||
-            res.statusText ||
-            'Error en API';
+        const message = (payload && (payload.message || payload.error)) || res.statusText || 'Error en API';
 
         const err = new Error(message);
         // Metadata útil para manejo en UI si querés
@@ -145,26 +149,22 @@ export async function apiFetch(path, options = {}) {
         throw err;
     }
 
-    // Muchas APIs devuelven { success, data }, otras devuelven el objeto directo
-    return payload && Object.prototype.hasOwnProperty.call(payload, 'data')
-        ? payload.data
-        : payload;
+    // ✅ Si pedimos fullResponse, devolvemos el payload completo tal cual.
+    if (fullResponse) return payload;
+
+    // Default (compat): si viene { data }, devolvemos data; sino payload directo
+    return payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
 }
 
 /* ───────────── Atajos cómodos ───────────── */
-export const apiGet = (path, opts = {}) =>
-    apiFetch(path, { method: 'GET', ...opts });
+export const apiGet = (path, opts = {}) => apiFetch(path, { method: 'GET', ...opts });
 
-export const apiPost = (path, body, opts = {}) =>
-    apiFetch(path, { method: 'POST', body, ...opts });
+export const apiPost = (path, body, opts = {}) => apiFetch(path, { method: 'POST', body, ...opts });
 
-export const apiPut = (path, body, opts = {}) =>
-    apiFetch(path, { method: 'PUT', body, ...opts });
+export const apiPut = (path, body, opts = {}) => apiFetch(path, { method: 'PUT', body, ...opts });
 
-export const apiPatch = (path, body, opts = {}) =>
-    apiFetch(path, { method: 'PATCH', body, ...opts });
+export const apiPatch = (path, body, opts = {}) => apiFetch(path, { method: 'PATCH', body, ...opts });
 
-export const apiDelete = (path, opts = {}) =>
-    apiFetch(path, { method: 'DELETE', ...opts });
+export const apiDelete = (path, opts = {}) => apiFetch(path, { method: 'DELETE', ...opts });
 
 export default apiFetch;

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import Swal from 'sweetalert2';
-import { crearVenta, obtenerVenta, actualizarVenta } from '../services/ventasService';
+import { crearVenta } from '../services/ventasService';
 import { obtenerFormasDePago } from '../services/cuotaService';
 import { obtenerClientesBasico } from '../services/clienteService';
 import { ArrowLeft, Save } from 'lucide-react';
@@ -48,8 +48,7 @@ const calcularTotalDesdeImpuestos = (values) => {
 };
 
 export default function VentaForm() {
-    const { id } = useParams();
-    const editMode = Boolean(id);
+    const { id } = useParams(); // si alguien entra a /ventas/:id/... lo detectamos
     const navigate = useNavigate();
 
     const [formasPago, setFormasPago] = useState([]);
@@ -90,6 +89,21 @@ export default function VentaForm() {
         detalle_producto: '', // 🆕 Detalle del producto vendido
     });
 
+    /* ───────── Bloqueo de edición por URL ───────── */
+    useEffect(() => {
+        if (id) {
+            Swal.fire({
+                icon: 'info',
+                title: 'Edición deshabilitada',
+                text: 'Las ventas no se pueden editar. Podés crear una nueva o eliminar una existente.',
+                confirmButtonColor: '#2563eb',
+            }).finally(() => {
+                navigate('/ventas', { replace: true });
+            });
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id]);
+
     /* ───────── Carga de formas de pago ───────── */
     useEffect(() => {
         (async () => {
@@ -114,50 +128,12 @@ export default function VentaForm() {
         })();
     }, []);
 
-    /* ───────── Carga/Inicialización de venta ───────── */
+    /* ───────── Inicialización alta ───────── */
     useEffect(() => {
-        (async () => {
-            setErr('');
-            if (editMode) {
-                setLoading(true);
-                try {
-                    const data = await obtenerVenta(id);
-                    const base = {
-                        fecha_imputacion: data?.fecha_imputacion || today,
-                        numero_comprobante: data?.numero_comprobante || '',
-                        cliente_id: data?.cliente_id ?? '',
-                        cliente_nombre: data?.cliente_nombre || '',
-                        doc_cliente: data?.doc_cliente || '',
-                        neto: data?.neto ?? '',
-                        iva: data?.iva ?? '',
-                        ret_gan: data?.ret_gan ?? '',
-                        ret_iva: data?.ret_iva ?? '',
-                        ret_iibb_tuc: data?.ret_iibb_tuc ?? '',
-                        total: data?.total ?? '',
-                        forma_pago_id: data?.forma_pago_id ?? '',
-                        vendedor: data?.vendedor || '',
-                        observacion: data?.observacion || '',
-                        detalle_producto: data?.detalle_producto || '', // 🆕 cargar desde back
-                    };
-
-                    // Reajustamos el total por si no estaba alineado con el desglose
-                    const totalAuto = calcularTotalDesdeImpuestos(base);
-                    setForm({
-                        ...base,
-                        total: totalAuto || base.total || '',
-                    });
-                } catch (e) {
-                    setErr(e?.message || 'No se pudo cargar la venta');
-                } finally {
-                    setLoading(false);
-                }
-            } else {
-                // Alta: el back genera el número
-                setForm((s) => ({ ...s, numero_comprobante: '' }));
-            }
-        })();
+        // Alta: el back genera el número
+        setForm((s) => ({ ...s, numero_comprobante: '' }));
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editMode, id]);
+    }, []);
 
     /* ───────── Autocomplete: filtrado en cliente ───────── */
     const filteredClientes = useMemo(() => {
@@ -215,7 +191,7 @@ export default function VentaForm() {
         setErr('');
 
         try {
-            const basePayload = {
+            const payload = {
                 fecha_imputacion: form.fecha_imputacion,
                 cliente_id: form.cliente_id ? Number(form.cliente_id) : null, // obligatorio para el back
                 cliente_nombre: form.cliente_nombre.trim(),
@@ -235,23 +211,15 @@ export default function VentaForm() {
                 detalle_producto: form.detalle_producto.trim(), // 🆕 enviar al back
             };
 
-            const payload = editMode
-                ? { ...basePayload, numero_comprobante: (form.numero_comprobante || '').trim() }
-                : { ...basePayload }; // en alta no enviamos numero_comprobante
-
             // Validaciones mínimas
-            if (!payload.fecha_imputacion || !form.cliente_nombre || !payload.total) {
+            if (!payload.fecha_imputacion || !payload.cliente_nombre || !payload.total) {
                 throw new Error('Completá los campos obligatorios (fecha, cliente, desglose con total > 0).');
             }
             if (!(payload.cliente_id > 0)) {
                 throw new Error('Seleccioná un cliente válido.');
             }
 
-            if (editMode) {
-                await actualizarVenta(id, payload);
-            } else {
-                await crearVenta(payload);
-            }
+            await crearVenta(payload);
 
             await Swal.fire({
                 icon: 'success',
@@ -279,9 +247,7 @@ export default function VentaForm() {
         <div className="max-w-5xl mx-auto px-4 py-6">
             {/* Header */}
             <div className="mb-4 flex items-center justify-between">
-                <h1 className="text-2xl font-semibold">
-                    {editMode ? 'Editar venta' : 'Nueva venta'}
-                </h1>
+                <h1 className="text-2xl font-semibold">Nueva venta</h1>
                 <Link
                     to="/ventas"
                     className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2 text-sm hover:bg-gray-50"
@@ -324,18 +290,14 @@ export default function VentaForm() {
                             name="numero_comprobante"
                             value={form.numero_comprobante}
                             onChange={onChange}
-                            readOnly={editMode}
-                            disabled={!editMode}
+                            readOnly
+                            disabled
                             placeholder="Se genera automáticamente al guardar"
-                            className={
-                                INPUT_CLS + ' ' + (!editMode ? 'bg-gray-50 cursor-not-allowed' : 'bg-white')
-                            }
+                            className={INPUT_CLS + ' bg-gray-50 cursor-not-allowed'}
                         />
-                        {!editMode && (
-                            <p className="mt-1 text-[11px] text-gray-500">
-                                Será asignado por el sistema al confirmar la venta.
-                            </p>
-                        )}
+                        <p className="mt-1 text-[11px] text-gray-500">
+                            Será asignado por el sistema al confirmar la venta.
+                        </p>
                     </div>
                 </div>
 

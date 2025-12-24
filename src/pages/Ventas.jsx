@@ -7,7 +7,6 @@ import {
     RefreshCw,
     Plus,
     Filter,
-    Pencil,
     Trash2,
     Download,
     FileSpreadsheet,
@@ -15,6 +14,7 @@ import {
     CreditCard
 } from 'lucide-react';
 import { exportToCSV, exportContableXLSX } from '../utils/exporters';
+import { jwtDecode } from 'jwt-decode';
 
 // YYYY-MM-DD en horario local (para alinear con backend y evitar saltos de día)
 const toYMD = (d) => {
@@ -68,9 +68,46 @@ const esVentaFinanciada = (r) => {
     return Number(r?.capital || 0) > 0 && Number(r?.cuotas || 0) > 1;
 };
 
+/* ===== Helpers auth/rol (solo UI) ===== */
+const getStoredToken = () => {
+    try {
+        const raw =
+            localStorage.getItem('token') ||
+            localStorage.getItem('authToken') ||
+            '';
+        return raw ? raw.replace(/^Bearer\s+/i, '') : '';
+    } catch {
+        return '';
+    }
+};
+
+const getRoleFromToken = () => {
+    try {
+        const token = getStoredToken();
+        if (!token) return null;
+        const payload = jwtDecode(token) || {};
+        const rol =
+            payload?.rol ??
+            payload?.role ??
+            payload?.role_id ??
+            payload?.roleId ??
+            payload?.rol_id ??
+            payload?.rolId ??
+            null;
+        const n = Number(rol);
+        return Number.isFinite(n) ? n : null;
+    } catch {
+        return null;
+    }
+};
+
 export default function Ventas() {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
+
+    // Permisos UI: solo Superadmin/Admin pueden crear/eliminar
+    const rol = useMemo(() => getRoleFromToken(), []);
+    const canManageVentas = rol === 0 || rol === 1;
 
     // Filtros (compatibles con backend: { desde, hasta, mes, anio, q })
     const [desde, setDesde] = useState(searchParams.get('desde') || today);
@@ -127,6 +164,14 @@ export default function Ventas() {
     }, [rows]);
 
     const handleEliminar = async (id) => {
+        if (!canManageVentas) {
+            return Swal.fire(
+                'Sin permisos',
+                'Solo Superadmin y Admin pueden eliminar ventas.',
+                'warning'
+            );
+        }
+
         const conf = await Swal.fire({
             title: 'Eliminar venta',
             text: '¿Seguro querés eliminar esta venta? Esta acción no se puede deshacer.',
@@ -255,6 +300,7 @@ export default function Ventas() {
             {/* Header */}
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
                 <h1 className="text-2xl font-semibold">Ventas (manuales)</h1>
+
                 <div className="flex flex-wrap items-center gap-2">
                     <button
                         onClick={fetchData}
@@ -283,25 +329,36 @@ export default function Ventas() {
                         Excel
                     </button>
 
-                    {/* Nuevo botón: Venta Financiada */}
-                    <button
-                        onClick={() => navigate('/ventas/financiada')}
-                        className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
-                        title="Crear venta financiada (genera Crédito)"
-                    >
-                        <CreditCard className="h-4 w-4" />
-                        Financiada
-                    </button>
+                    {canManageVentas && (
+                        <>
+                            {/* Venta Financiada */}
+                            <button
+                                onClick={() => navigate('/ventas/financiada')}
+                                className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                                title="Crear venta financiada (genera Crédito)"
+                            >
+                                <CreditCard className="h-4 w-4" />
+                                Financiada
+                            </button>
 
-                    <button
-                        onClick={() => navigate('/ventas/nuevo')}
-                        className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                    >
-                        <Plus className="h-4 w-4" />
-                        Nueva
-                    </button>
+                            <button
+                                onClick={() => navigate('/ventas/nuevo')}
+                                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Nueva
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
+
+            {/* Mensaje solo lectura */}
+            {!canManageVentas && (
+                <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    Modo solo lectura: solo Superadmin y Admin pueden crear o eliminar ventas.
+                </div>
+            )}
 
             {/* Filtros */}
             <div className="rounded-lg border border-gray-200 bg-white p-4 mb-4">
@@ -527,20 +584,16 @@ export default function Ventas() {
                                 )}
                             </div>
 
-                            <div className="mt-3 flex flex-wrap gap-2">
-                                <Link
-                                    to={`/ventas/${r.id}/editar`}
-                                    className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs hover:bg-gray-50"
-                                >
-                                    <Pencil className="h-4 w-4" /> Editar
-                                </Link>
-                                <button
-                                    onClick={() => handleEliminar(r.id)}
-                                    className="inline-flex items-center gap-1 rounded-md border border-rose-300 px-3 py-1.5 text-xs text-rose-600 hover:bg-rose-50"
-                                >
-                                    <Trash2 className="h-4 w-4" /> Borrar
-                                </button>
-                            </div>
+                            {canManageVentas && (
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    <button
+                                        onClick={() => handleEliminar(r.id)}
+                                        className="inline-flex items-center gap-1 rounded-md border border-rose-300 px-3 py-1.5 text-xs text-rose-600 hover:bg-rose-50"
+                                    >
+                                        <Trash2 className="h-4 w-4" /> Borrar
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     );
                 })}
@@ -722,18 +775,16 @@ export default function Ventas() {
                                     </td>
                                     <td className="px-3 py-2">
                                         <div className="flex justify-end gap-2">
-                                            <Link
-                                                to={`/ventas/${r.id}/editar`}
-                                                className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50"
-                                            >
-                                                <Pencil className="h-4 w-4" /> Editar
-                                            </Link>
-                                            <button
-                                                onClick={() => handleEliminar(r.id)}
-                                                className="inline-flex items-center gap-1 rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50"
-                                            >
-                                                <Trash2 className="h-4 w-4" /> Borrar
-                                            </button>
+                                            {canManageVentas ? (
+                                                <button
+                                                    onClick={() => handleEliminar(r.id)}
+                                                    className="inline-flex items-center gap-1 rounded-md border border-rose-300 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50"
+                                                >
+                                                    <Trash2 className="h-4 w-4" /> Borrar
+                                                </button>
+                                            ) : (
+                                                <span className="text-gray-400 text-xs">—</span>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>

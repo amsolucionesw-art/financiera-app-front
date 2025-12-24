@@ -137,6 +137,10 @@ const App = () => (
             {/* ✅ NUEVA: Venta financiada (genera Crédito automáticamente) */}
             <Route path="ventas/financiada" element={<VentaFinanciadaNuevaPage />} />
 
+            {/* ❌ Edición de ventas deshabilitada: redirect explícito */}
+            <Route path="ventas/:id/editar" element={<Navigate to="/ventas" replace />} />
+            <Route path="ventas/editar/:id" element={<Navigate to="/ventas" replace />} />
+
             {/* ✅ Proveedores (NUEVO, solo admin/superadmin) */}
             <Route path="proveedores" element={<Proveedores />} />
           </Route>
@@ -162,4 +166,3 @@ const App = () => (
 );
 
 export default App;
-

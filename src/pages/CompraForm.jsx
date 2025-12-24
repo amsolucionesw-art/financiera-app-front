@@ -44,6 +44,7 @@ const toNumber = (value) => {
     const n = Number(value);
     return Number.isFinite(n) ? n : 0;
 };
+
 const fmtARS = (n) =>
     Number(n || 0).toLocaleString('es-AR', {
         style: 'currency',
@@ -51,7 +52,20 @@ const fmtARS = (n) =>
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     });
+
 const toCommaFixed = (n) => Number(n || 0).toFixed(2).replace('.', ',');
+
+/* ─────────────── Helpers alert/resp ─────────────── */
+const extractMessage = (resp, fallback) => {
+    // soporta: {success, message, data}, {message}, o respuesta directa
+    const msg =
+        resp?.message ||
+        resp?.data?.message ||
+        resp?.data?.msg ||
+        resp?.msg;
+
+    return (typeof msg === 'string' && msg.trim()) ? msg.trim() : fallback;
+};
 
 /* ─────────────── Opciones fijas ─────────────── */
 const TIPO_COMPROBANTE_OPTS = ['FC A', 'ND A', 'NC A', 'FC B', 'ND B', 'NC B', 'FC C', 'ND C', 'NC C', 'REC'];
@@ -204,12 +218,7 @@ export default function CompraForm() {
             const cuit = (p?.cuil_cuit || '').toLowerCase();
             const email = (p?.email || '').toLowerCase();
             const tel = (p?.telefono || '').toLowerCase();
-            return (
-                nombre.includes(q) ||
-                cuit.includes(q) ||
-                email.includes(q) ||
-                tel.includes(q)
-            );
+            return nombre.includes(q) || cuit.includes(q) || email.includes(q) || tel.includes(q);
         });
     }, [proveedores, provSearch]);
 
@@ -276,10 +285,7 @@ export default function CompraForm() {
         return Number.isFinite(sum) ? sum : 0;
     }, [form.neto, form.iva, form.per_iva, form.per_iibb_tuc, form.per_tem]);
 
-    const diffTotal = useMemo(
-        () => toNumber(form.total) - totalSugerido,
-        [form.total, totalSugerido]
-    );
+    const diffTotal = useMemo(() => toNumber(form.total) - totalSugerido, [form.total, totalSugerido]);
 
     const proveedorSeleccionado = useMemo(() => {
         if (!form.proveedor_id) return null;
@@ -306,14 +312,37 @@ export default function CompraForm() {
         if (totalSugerido > 0 && Math.abs(diferencia) >= 0.01) {
             await Swal.fire({
                 title: 'El total no coincide',
-                text: `La suma sugerida de los importes es ${fmtARS(
-                    totalSugerido
-                )} y el total ingresado es ${fmtARS(totalIngresado)}. Ajustá los importes o el total para que no haya diferencia.`,
+                text: `La suma sugerida de los importes es ${fmtARS(totalSugerido)} y el total ingresado es ${fmtARS(
+                    totalIngresado
+                )}. Ajustá los importes o el total para que no haya diferencia.`,
                 icon: 'warning',
                 confirmButtonText: 'Entendido',
                 confirmButtonColor: '#2563eb'
             });
             return;
+        }
+
+        // ✅ Alert de confirmación SOLO al crear (Nueva compra)
+        if (!editMode) {
+            const confirm = await Swal.fire({
+                title: 'Confirmar creación de compra',
+                html: `
+                    <div style="text-align:left;font-size:14px;line-height:1.4">
+                        <div><b>Proveedor:</b> ${String(form.proveedor_nombre || '').trim() || '—'}</div>
+                        <div><b>Comprobante:</b> ${String(form.tipo_comprobante || '').trim() || '—'} ${String(form.numero_comprobante || '').trim() || ''}</div>
+                        <div><b>Fecha imputación:</b> ${String(form.fecha_imputacion || '').trim() || '—'}</div>
+                        <div><b>Total:</b> ${fmtARS(totalIngresado || totalSugerido || 0)}</div>
+                    </div>
+                `,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: 'Sí, crear',
+                cancelButtonText: 'Cancelar',
+                confirmButtonColor: '#2563eb',
+                cancelButtonColor: '#6b7280'
+            });
+
+            if (!confirm.isConfirmed) return;
         }
 
         setLoading(true);
@@ -327,14 +356,40 @@ export default function CompraForm() {
 
             if (payload.proveedor_id === '') delete payload.proveedor_id;
 
+            let resp;
             if (editMode) {
-                await actualizarCompra(id, payload);
+                resp = await actualizarCompra(id, payload);
             } else {
-                await crearCompra(payload);
+                resp = await crearCompra(payload);
             }
+
+            // ✅ Alert de éxito (usa message del backend si viene)
+            const okMsg = extractMessage(
+                resp,
+                editMode ? 'Compra actualizada correctamente' : 'Compra creada correctamente'
+            );
+
+            await Swal.fire({
+                title: 'Listo',
+                text: okMsg,
+                icon: 'success',
+                confirmButtonText: 'Aceptar',
+                confirmButtonColor: '#2563eb'
+            });
+
             navigate('/compras');
         } catch (e2) {
-            setErr(e2?.message || 'Error al guardar');
+            const msg = e2?.message || 'Error al guardar';
+            setErr(msg);
+
+            // ✅ Alert de error (además del banner rojo)
+            await Swal.fire({
+                title: 'No se pudo guardar',
+                text: msg,
+                icon: 'error',
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#2563eb'
+            });
         } finally {
             setLoading(false);
         }
@@ -445,13 +500,13 @@ export default function CompraForm() {
                             <div className="md:col-span-2">
                                 <Label>Seleccionar proveedor</Label>
                                 <div className="mt-1 flex gap-2">
-                                    <Select
-                                        name="proveedor_id"
-                                        value={form.proveedor_id}
-                                        onChange={onChange}
-                                    >
+                                    <Select name="proveedor_id" value={form.proveedor_id} onChange={onChange}>
                                         <option value="">— Sin proveedor —</option>
-                                        {proveedoresFiltrados.length === 0 && <option value="" disabled>(Sin resultados)</option>}
+                                        {proveedoresFiltrados.length === 0 && (
+                                            <option value="" disabled>
+                                                (Sin resultados)
+                                            </option>
+                                        )}
                                         {proveedoresFiltrados.map((p) => (
                                             <option key={p.id} value={String(p.id)}>
                                                 {p.nombre_razon_social} {p.cuil_cuit ? `(${p.cuil_cuit})` : ''}
@@ -474,7 +529,11 @@ export default function CompraForm() {
                                     <Info className="mt-0.5 h-4 w-4" />
                                     <span>
                                         Podés seleccionar y luego{' '}
-                                        <button type="button" onClick={autocompletarDesdeProveedor} className="underline hover:no-underline">
+                                        <button
+                                            type="button"
+                                            onClick={autocompletarDesdeProveedor}
+                                            className="underline hover:no-underline"
+                                        >
                                             autocompletar
                                         </button>{' '}
                                         nombre y CUIT. Se pueden editar solo para esta compra.
@@ -534,12 +593,7 @@ export default function CompraForm() {
 
                             <div>
                                 <Label>CUIT/CUIL</Label>
-                                <Input
-                                    name="proveedor_cuit"
-                                    value={form.proveedor_cuit}
-                                    onChange={onChange}
-                                    placeholder="20-12345678-3"
-                                />
+                                <Input name="proveedor_cuit" value={form.proveedor_cuit} onChange={onChange} placeholder="20-12345678-3" />
                             </div>
                         </div>
                     </div>
@@ -554,36 +608,15 @@ export default function CompraForm() {
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
                             <div>
                                 <Label>Neto</Label>
-                                <Input
-                                    name="neto"
-                                    value={form.neto}
-                                    onChange={onChange}
-                                    inputMode="decimal"
-                                    placeholder="0,00"
-                                    className="text-right"
-                                />
+                                <Input name="neto" value={form.neto} onChange={onChange} inputMode="decimal" placeholder="0,00" className="text-right" />
                             </div>
                             <div>
                                 <Label>IVA</Label>
-                                <Input
-                                    name="iva"
-                                    value={form.iva}
-                                    onChange={onChange}
-                                    inputMode="decimal"
-                                    placeholder="0,00"
-                                    className="text-right"
-                                />
+                                <Input name="iva" value={form.iva} onChange={onChange} inputMode="decimal" placeholder="0,00" className="text-right" />
                             </div>
                             <div>
                                 <Label>Per. IVA</Label>
-                                <Input
-                                    name="per_iva"
-                                    value={form.per_iva}
-                                    onChange={onChange}
-                                    inputMode="decimal"
-                                    placeholder="0,00"
-                                    className="text-right"
-                                />
+                                <Input name="per_iva" value={form.per_iva} onChange={onChange} inputMode="decimal" placeholder="0,00" className="text-right" />
                             </div>
                             <div>
                                 <Label>Per. IIBB Tuc</Label>
@@ -598,14 +631,7 @@ export default function CompraForm() {
                             </div>
                             <div>
                                 <Label>Per. TEM</Label>
-                                <Input
-                                    name="per_tem"
-                                    value={form.per_tem}
-                                    onChange={onChange}
-                                    inputMode="decimal"
-                                    placeholder="0,00"
-                                    className="text-right"
-                                />
+                                <Input name="per_tem" value={form.per_tem} onChange={onChange} inputMode="decimal" placeholder="0,00" className="text-right" />
                             </div>
                         </div>
 
@@ -657,21 +683,11 @@ export default function CompraForm() {
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                             <div>
                                 <Label>Depósito destino</Label>
-                                <Input
-                                    name="deposito_destino"
-                                    value={form.deposito_destino}
-                                    onChange={onChange}
-                                    placeholder="Depósito / Sucursal"
-                                />
+                                <Input name="deposito_destino" value={form.deposito_destino} onChange={onChange} placeholder="Depósito / Sucursal" />
                             </div>
                             <div className="md:col-span-2">
                                 <Label>Referencia de compra</Label>
-                                <Input
-                                    name="referencia_compra"
-                                    value={form.referencia_compra}
-                                    onChange={onChange}
-                                    placeholder="Ej: OC-2025-0001"
-                                />
+                                <Input name="referencia_compra" value={form.referencia_compra} onChange={onChange} placeholder="Ej: OC-2025-0001" />
                             </div>
 
                             <div>
@@ -687,12 +703,7 @@ export default function CompraForm() {
                             </div>
                             <div>
                                 <Label>Facturado a</Label>
-                                <Input
-                                    name="facturado_a"
-                                    value={form.facturado_a}
-                                    onChange={onChange}
-                                    placeholder="Razón social / Persona"
-                                />
+                                <Input name="facturado_a" value={form.facturado_a} onChange={onChange} placeholder="Razón social / Persona" />
                             </div>
                             <div>
                                 <Label>Gasto realizado por</Label>

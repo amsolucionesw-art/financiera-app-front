@@ -92,7 +92,7 @@ const normalizeTipoCredito = (v) => {
     return 'mensual';
 };
 
-// Normaliza payload de create/update
+// Normaliza payload de create (y dejó preparado por si se usa en otros flujos)
 const normalizePayload = (data = {}) => {
     const out = { ...data };
 
@@ -126,9 +126,11 @@ const normalizePayload = (data = {}) => {
     }
 
     // Trims comunes
-    ['numero_comprobante', 'cliente_nombre', 'doc_cliente', 'vendedor', 'observacion'].forEach((k) => {
-        if (k in out && typeof out[k] === 'string') out[k] = out[k].trim();
-    });
+    ['numero_comprobante', 'cliente_nombre', 'doc_cliente', 'vendedor', 'observacion', 'detalle_producto'].forEach(
+        (k) => {
+            if (k in out && typeof out[k] === 'string') out[k] = out[k].trim();
+        }
+    );
 
     return out;
 };
@@ -174,28 +176,40 @@ export const listarVentas = (params = {}) =>
 /** Obtener venta manual por ID */
 export const obtenerVenta = (id) => apiFetch(joinPath(BASE_VENTAS, id));
 
-/** Crear venta manual */
+/**
+ * Crear venta manual
+ * ✅ fullResponse: true => preserva { success, message, data } (ideal para alerts)
+ */
 export const crearVenta = (data) =>
     apiFetch(BASE_VENTAS, {
         method: 'POST',
         body: normalizePayload(data),
+        fullResponse: true,
     });
 
-/** Actualizar venta manual */
-export const actualizarVenta = (id, data) =>
-    apiFetch(joinPath(BASE_VENTAS, id), {
-        method: 'PUT',
-        body: normalizePayload(data),
-    });
+/**
+ * ❌ Edición de ventas deshabilitada
+ * Dejado como stub para detectar rápidamente usos accidentales desde el front.
+ * (No se exporta por default, pero sí como named export por si alguien lo tenía importado;
+ *  si lo llaman, falla con un mensaje claro.)
+ */
+export const actualizarVenta = async () => {
+    throw new Error('Edición de ventas deshabilitada. Solo se permite crear y eliminar.');
+};
 
-/** Eliminar venta manual */
+/**
+ * Eliminar venta manual
+ * ✅ fullResponse: true => preserva { success, message, data }
+ */
 export const eliminarVenta = (id) =>
-    apiFetch(joinPath(BASE_VENTAS, id), { method: 'DELETE' });
+    apiFetch(joinPath(BASE_VENTAS, id), {
+        method: 'DELETE',
+        fullResponse: true,
+    });
 
 export default {
     listarVentas,
     obtenerVenta,
     crearVenta,
-    actualizarVenta,
     eliminarVenta,
 };

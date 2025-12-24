@@ -47,7 +47,10 @@ const Cotizador = () => {
     // Constantes de negocio para LIBRE
     const TASA_LIBRE_PCT = 60;            // 60% por ciclo (fijo)
     const MORA_DIARIA_LIBRE_PCT = 2.5;    // 2,5% diario sobre deuda (capital + interés) desde el vencimiento
-    const LIBRE_MAX_CICLOS = 3;
+    const LIBRE_MAX_CICLOS = 3;           // se aclara, pero NO se muestra proyección
+
+    const LEYENDA_LIBRE =
+        "Este crédito funciona por ciclos. Al vencer el ciclo, si no se paga, se aplica mora diaria hasta que se regularice. Puede renovarse por ciclos (hasta 3).";
 
     // Al montar, cargo todos los presupuestos para decidir el siguiente número
     useEffect(() => {
@@ -68,7 +71,7 @@ const Cotizador = () => {
     // 🔒 Reglas para LIBRE:
     // - Siempre mensual
     // - Se simula 1 ciclo (1 “cuota abierta”) con interés incluido
-    // - Aclaración: puede extenderse hasta 3 ciclos (proyección informativa)
+    // - Aclaración: puede extenderse hasta 3 ciclos (sin proyección)
     useEffect(() => {
         if (modalidad === "libre") {
             if (tipo !== "mensual") setTipo("mensual");
@@ -134,17 +137,7 @@ const Cotizador = () => {
         });
     };
 
-    // Vencimientos para proyección LIBRE (hasta 3 ciclos)
-    const generarFechasLibreProyeccion = () => {
-        const base = new Date();
-        return Array.from({ length: LIBRE_MAX_CICLOS }, (_, i) => {
-            const venc = addDays(base, 30 * (i + 1));
-            return formatoFecha(venc);
-        });
-    };
-
     const fechas = generarFechasVencimiento();
-    const fechasLibre = generarFechasLibreProyeccion();
 
     const getPlanLabel = () => {
         const raw = String(modalidad || "").toLowerCase();
@@ -160,43 +153,7 @@ const Cotizador = () => {
     const planLabel = getPlanLabel();
     const itemLabel = modalidad === "libre" ? "Ciclo" : "Cuota";
 
-    // Proyección Libre: cada ciclo cierra con 60% sobre el capital del ciclo.
-    // Si no paga al vencimiento, la mora diaria (2,5%) corre sobre la deuda de ese ciclo (capital+interés).
-    // El “capital” del ciclo siguiente pasa a ser la deuda del ciclo anterior (capitalización por ciclo).
-    const calcularLibreProyeccion = (capitalBase, maxCycles = LIBRE_MAX_CICLOS) => {
-        const cap0 = Number(capitalBase);
-        if (!Number.isFinite(cap0) || cap0 <= 0) return [];
-
-        let capitalCiclo = fix2(cap0);
-        const out = [];
-
-        for (let ciclo = 1; ciclo <= maxCycles; ciclo++) {
-            const interesMonto = fix2(capitalCiclo * (TASA_LIBRE_PCT / 100));
-            const totalCiclo = fix2(capitalCiclo + interesMonto);
-            const moraDiaria = fix2(totalCiclo * (MORA_DIARIA_LIBRE_PCT / 100));
-
-            out.push({
-                ciclo,
-                capitalCiclo,
-                interesMonto,
-                totalCiclo,
-                moraDiaria
-            });
-
-            // Capital del próximo ciclo = deuda del ciclo actual (capital + interés)
-            capitalCiclo = totalCiclo;
-        }
-
-        return out;
-    };
-
-    /* ========= Simulación de montos según modalidad =========
-       - LIBRE: 1 ciclo (cuota abierta) con 60% incluido.
-                Se muestra proyección hasta 3 ciclos (informativa).
-                Mora diaria: 2,5% sobre (capital + interés) desde el vencimiento.
-       - COMÚN / PROGRESIVO: interés proporcional mínimo 60%, igual criterio que backend.
-       - PROGRESIVO: cuotas crecientes según fórmula n(n+1)/2.
-    */
+    /* ========= Simulación de montos según modalidad ========= */
 
     const calcularSimulacion = () => {
         const capital = parseFloat(monto);
@@ -207,25 +164,24 @@ const Cotizador = () => {
                 total: 0,
                 interesPct: 0,
                 cuotasDetalle: [],
-                libreProyeccion: [],
                 moraDiariaMonto: 0
             };
         }
 
-        // === LIBRE ===
+        // === LIBRE (SOLO 1 CICLO) ===
         if (modalidad === "libre") {
-            const libreProyeccion = calcularLibreProyeccion(capital, LIBRE_MAX_CICLOS);
-            const ciclo1 = libreProyeccion[0];
+            const capitalCiclo = fix2(capital);
+            const interesMonto = fix2(capitalCiclo * (TASA_LIBRE_PCT / 100));
+            const totalCiclo = fix2(capitalCiclo + interesMonto);
+            const moraDiaria = fix2(totalCiclo * (MORA_DIARIA_LIBRE_PCT / 100));
 
-            const total = ciclo1 ? ciclo1.totalCiclo : 0;
-            const cuotasDetalle = [{ numero: 1, importe: total }];
+            const cuotasDetalle = [{ numero: 1, importe: totalCiclo }];
 
             return {
-                total,
+                total: totalCiclo,
                 interesPct: TASA_LIBRE_PCT,
                 cuotasDetalle,
-                libreProyeccion,
-                moraDiariaMonto: ciclo1 ? ciclo1.moraDiaria : 0
+                moraDiariaMonto: moraDiaria
             };
         }
 
@@ -272,12 +228,11 @@ const Cotizador = () => {
             total,
             interesPct: interestPct,
             cuotasDetalle,
-            libreProyeccion: [],
             moraDiariaMonto: 0
         };
     };
 
-    const { total, interesPct, cuotasDetalle, libreProyeccion, moraDiariaMonto } = calcularSimulacion();
+    const { total, interesPct, cuotasDetalle, moraDiariaMonto } = calcularSimulacion();
 
     const porCuota =
         cuotasDetalle && cuotasDetalle.length > 0 ? cuotasDetalle[0].importe : 0;
@@ -285,7 +240,7 @@ const Cotizador = () => {
     /* ========= Crear presupuesto + PDF ========= */
 
     const handleCrearYDescargar = async () => {
-        const { total, interesPct, cuotasDetalle, libreProyeccion, moraDiariaMonto } = calcularSimulacion();
+        const { total, interesPct, cuotasDetalle, moraDiariaMonto } = calcularSimulacion();
         if (!total || !cuotasDetalle || cuotasDetalle.length === 0) {
             console.warn("Datos insuficientes para crear presupuesto");
             return;
@@ -356,12 +311,14 @@ const Cotizador = () => {
         doc.text(`Periodicidad: ${capitalizarTipo(modalidad === "libre" ? "mensual" : tipo)}`, 14, y); y += 7;
 
         if (modalidad === "libre") {
-            doc.text(`Tasa del ciclo: ${TASA_LIBRE_PCT.toFixed(2)}%`, 14, y); y += 7;
+            // ✅ Solo monto en pesos
             doc.text(
-                `Mora diaria desde venc.: ${MORA_DIARIA_LIBRE_PCT.toFixed(2)}% sobre (capital+interés) = $${formatoMoneda(moraDiariaMonto)}`,
+                `Mora diaria desde venc.: $${formatoMoneda(moraDiariaMonto)}`,
                 14,
                 y
             ); y += 7;
+
+            // ✅ Aclara ciclos posibles (sin mostrar otros ciclos)
             doc.text(`Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)`, 14, y); y += 7;
         } else if (interesPct) {
             doc.text(`Interés total aplicado: ${interesPct.toFixed(2)}%`, 14, y); y += 7;
@@ -370,7 +327,7 @@ const Cotizador = () => {
         doc.text(`Cantidad de ${modalidad === "libre" ? "ciclos" : "cuotas"}: ${modalidad === "libre" ? "1" : cuotas}`, 14, y); y += 7;
         doc.text(`Total a pagar: $${formatoMoneda(total)}`, 14, y); y += 7;
 
-        // Tabla principal (detalle simulado)
+        // Tabla principal (detalle simulado) => en LIBRE es 1 fila
         autoTable(doc, {
             startY: y + 5,
             head: [[`# ${itemLabel}`, "Fecha (estimada)", "Importe"]],
@@ -381,33 +338,11 @@ const Cotizador = () => {
             ])
         });
 
-        // Proyección Libre (informativa) hasta 3 ciclos
-        if (modalidad === "libre" && Array.isArray(libreProyeccion) && libreProyeccion.length > 0) {
-            const nextY = (doc.lastAutoTable?.finalY || (y + 20)) + 8;
-
-            autoTable(doc, {
-                startY: nextY,
-                head: [[
-                    "Ciclo",
-                    "Venc. estimado",
-                    "Capital ciclo",
-                    "Interés (60%)",
-                    "Deuda al cierre",
-                    "Mora diaria (2,5%)*"
-                ]],
-                body: libreProyeccion.map((row, idx) => [
-                    row.ciclo,
-                    fechasLibre[idx] || "—",
-                    `$${formatoMoneda(row.capitalCiclo)}`,
-                    `$${formatoMoneda(row.interesMonto)}`,
-                    `$${formatoMoneda(row.totalCiclo)}`,
-                    `$${formatoMoneda(row.moraDiaria)}`
-                ])
-            });
-
-            const footY = (doc.lastAutoTable?.finalY || nextY) + 6;
+        // ✅ Leyenda premium para LIBRE debajo de la tabla
+        if (modalidad === "libre") {
+            const afterY = (doc.lastAutoTable?.finalY || (y + 20)) + 8;
             doc.setFontSize(9);
-            doc.text("*La mora diaria corre desde el vencimiento del ciclo si no se paga.", 14, footY);
+            doc.text(LEYENDA_LIBRE, 14, afterY, { maxWidth: PAGE_W - 28 });
             doc.setFontSize(11);
         }
 
@@ -465,7 +400,7 @@ const Cotizador = () => {
                     />
                     {modalidad === "libre" && (
                         <p className="mt-1 text-xs text-gray-500">
-                            En crédito Libre se simula 1 ciclo. Puede extenderse hasta {LIBRE_MAX_CICLOS} ciclos (se muestra proyección).
+                            En crédito Libre se simula 1 ciclo. Puede extenderse hasta {LIBRE_MAX_CICLOS} ciclos (sin proyección).
                         </p>
                     )}
                 </div>
@@ -584,15 +519,10 @@ const Cotizador = () => {
                     <>
                         <p className="flex items-center gap-2">
                             <ListOrdered className="text-blue-600" size={18} />
-                            <strong>Tasa del ciclo:</strong> {TASA_LIBRE_PCT.toFixed(2)}%
-                        </p>
-                        <p className="flex items-center gap-2">
-                            <ListOrdered className="text-blue-600" size={18} />
-                            <strong>Mora diaria desde vencimiento:</strong>{" "}
-                            {MORA_DIARIA_LIBRE_PCT.toFixed(2)}% sobre (capital+interés) = ${formatoMoneda(moraDiariaMonto)}
+                            <strong>Mora diaria desde vencimiento:</strong> ${formatoMoneda(moraDiariaMonto)}
                         </p>
                         <p className="text-xs text-gray-500">
-                            Nota: la mora diaria corre si no se paga al vencimiento del ciclo. Se simula 1 ciclo; proyección informativa hasta {LIBRE_MAX_CICLOS}.
+                            Nota: la mora diaria corre si no se paga al vencimiento del ciclo. Se simula 1 ciclo; puede extenderse hasta {LIBRE_MAX_CICLOS} ciclos.
                         </p>
                     </>
                 )}
@@ -635,28 +565,17 @@ const Cotizador = () => {
                                 </li>
                             ))}
                         </ul>
+
+                        {/* ✅ Leyenda premium solo para LIBRE */}
+                        {modalidad === "libre" && (
+                            <p className="mt-2 text-xs text-gray-500">
+                                {LEYENDA_LIBRE}
+                            </p>
+                        )}
                     </div>
                 )}
 
-                {/* Proyección informativa LIBRE (hasta 3 ciclos) */}
-                {modalidad === "libre" && Array.isArray(libreProyeccion) && libreProyeccion.length > 0 && (
-                    <div className="pt-3">
-                        <div className="flex items-center gap-2 mb-1 text-sm font-medium text-gray-600">
-                            <CalendarDays className="text-indigo-600" size={18} />
-                            Proyección (si se extiende hasta {LIBRE_MAX_CICLOS} ciclos):
-                        </div>
-                        <ul className="list-disc ml-6 space-y-1">
-                            {libreProyeccion.map((row, idx) => (
-                                <li key={row.ciclo}>
-                                    Ciclo {row.ciclo} (venc. {fechasLibre[idx] || "—"}): deuda al cierre ${formatoMoneda(row.totalCiclo)} — mora diaria ${formatoMoneda(row.moraDiaria)}
-                                </li>
-                            ))}
-                        </ul>
-                        <p className="mt-1 text-xs text-gray-500">
-                            *La mora diaria (2,5%) aplica sobre la deuda del ciclo vencido (capital + interés) desde el día posterior al vencimiento.
-                        </p>
-                    </div>
-                )}
+                {/* ✅ Eliminado: Proyección LIBRE (ciclos 2 y 3) */}
             </div>
 
             {/* Acciones */}
@@ -698,22 +617,11 @@ const Cotizador = () => {
                                     .join("\n")
                                 : "Sin detalle calculado.";
 
-                        const proyLibreTxt =
-                            modalidad === "libre" && Array.isArray(libreProyeccion) && libreProyeccion.length > 0
-                                ? "\n\n📈 Proyección (hasta 3 ciclos):\n" +
-                                libreProyeccion
-                                    .map((row, idx) =>
-                                        `- Ciclo ${row.ciclo} (venc. ${fechasLibre[idx] || "—"}): $${formatoMoneda(row.totalCiclo)} | mora diaria $${formatoMoneda(row.moraDiaria)}`
-                                    )
-                                    .join("\n") +
-                                "\n*La mora diaria corre desde el vencimiento del ciclo si no se paga."
-                                : "";
-
                         const extraLibre =
                             modalidad === "libre"
-                                ? `\n- Tasa del ciclo: ${TASA_LIBRE_PCT.toFixed(2)}%` +
-                                `\n- Mora diaria desde venc.: ${MORA_DIARIA_LIBRE_PCT.toFixed(2)}% sobre (capital+interés) = $${formatoMoneda(moraDiariaMonto)}` +
-                                `\n- Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)`
+                                ? `\n- Mora diaria desde venc.: $${formatoMoneda(moraDiariaMonto)}` +
+                                  `\n- Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)` +
+                                  `\n\nℹ️ ${LEYENDA_LIBRE}`
                                 : "";
 
                         const resumen = `
@@ -730,7 +638,7 @@ const Cotizador = () => {
                             }${extraLibre}
 
 🗓️ Detalle:
-${resumenCuotas}${proyLibreTxt}
+${resumenCuotas}
                         `.trim();
 
                         const mensaje = encodeURIComponent(resumen);
@@ -747,5 +655,3 @@ ${resumenCuotas}${proyLibreTxt}
 };
 
 export default Cotizador;
-
-

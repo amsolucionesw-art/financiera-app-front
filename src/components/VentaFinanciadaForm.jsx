@@ -1,5 +1,6 @@
 // src/components/VentaFinanciadaForm.jsx
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Swal from 'sweetalert2';
 import { obtenerClientesBasico, obtenerClientePorId } from '../services/clienteService';
 import ventasService from '../services/ventasService';
 
@@ -33,6 +34,14 @@ const toNumber = (v) => {
 
 const fix2 = (n) => Math.round(toNumber(n) * 100) / 100;
 
+const fmtARS = (n) =>
+    Number(n || 0).toLocaleString('es-AR', {
+        style: 'currency',
+        currency: 'ARS',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+
 const TIPOS = [
     { value: 'mensual', label: 'Mensual' },
     { value: 'quincenal', label: 'Quincenal' },
@@ -56,6 +65,17 @@ const calcularTotalDesdeImpuestos = (values) => {
     if (!totalNum) return '';
     return totalNum.toFixed(2).replace('.', ',');
 };
+
+const extractMessage = (resp, fallback) => {
+    const msg =
+        resp?.message ||
+        resp?.data?.message ||
+        resp?.data?.msg ||
+        resp?.msg;
+    return typeof msg === 'string' && msg.trim() ? msg.trim() : fallback;
+};
+
+const labelTipo = (v) => TIPOS.find((t) => t.value === v)?.label || String(v || '').trim() || '—';
 
 export default function VentaFinanciadaForm({
     onCreated,
@@ -230,20 +250,57 @@ export default function VentaFinanciadaForm({
 
     const handleSubmit = async (e) => {
         e?.preventDefault?.();
+        if (saving) return; // guard anti doble submit
+
         setError(null);
         setCreditoInfo(null);
 
         const msg = validate();
         if (msg) return setError(msg);
 
+        const capitalNum = fix2(form.capital);
+        const interesNum = fix2(form.interes);
+        const cuotasNum = Number(form.cuotas);
+        const totalNum = fix2(form.total);
+
+        // ✅ Confirmación antes de crear
+        const confirm = await Swal.fire({
+            title: 'Confirmar venta financiada',
+            html: `
+                <div style="text-align:left;font-size:14px;line-height:1.4">
+                    <div><b>Cliente:</b> ${String(form.cliente_nombre || '').trim() || '—'}</div>
+                    <div><b>DNI:</b> ${String(form.doc_cliente || '').trim() || '—'}</div>
+                    <div><b>Fecha imputación:</b> ${String(form.fecha_imputacion || '').trim() || '—'}</div>
+                    <hr style="margin:10px 0;border:none;border-top:1px solid #eee" />
+                    <div><b>Capital:</b> ${fmtARS(capitalNum)}</div>
+                    <div><b>Interés:</b> ${interesNum}%</div>
+                    <div><b>Cuotas:</b> ${cuotasNum}</div>
+                    <div><b>Tipo:</b> ${labelTipo(form.tipo_credito)}</div>
+                    <div><b>Total:</b> ${fmtARS(totalNum)}</div>
+                    ${String(form.detalle_producto || '').trim()
+                        ? `<div style="margin-top:6px"><b>Producto:</b> ${String(form.detalle_producto).trim()}</div>`
+                        : ''
+                    }
+                </div>
+            `,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, crear',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#2563eb',
+            cancelButtonColor: '#6b7280'
+        });
+
+        if (!confirm.isConfirmed) return;
+
         const payload = {
             fecha_imputacion: form.fecha_imputacion,
             cliente_id: Number(form.cliente_id),
             cliente_nombre: form.cliente_nombre?.trim(),
             doc_cliente: form.doc_cliente?.trim() || null,
-            capital: fix2(form.capital),
-            interes: fix2(form.interes),
-            cuotas: Number(form.cuotas),
+            capital: capitalNum,
+            interes: interesNum,
+            cuotas: cuotasNum,
             tipo_credito: form.tipo_credito,
             detalle_producto: form.detalle_producto?.trim() || null,
             neto: fix2(form.neto || 0),
@@ -251,19 +308,64 @@ export default function VentaFinanciadaForm({
             ret_gan: fix2(form.ret_gan || 0),
             ret_iva: fix2(form.ret_iva || 0),
             ret_iibb_tuc: fix2(form.ret_iibb_tuc || 0),
-            total: fix2(form.total),
+            total: totalNum,
             vendedor: form.vendedor?.trim() || null,
             observacion: form.observacion?.trim() || null,
         };
 
         setSaving(true);
+
+        // ✅ Modal “Guardando…” (estilo Compras)
+        Swal.fire({
+            title: 'Guardando…',
+            text: 'Creando venta financiada',
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+            didOpen: () => Swal.showLoading(),
+        });
+
         try {
             const resp = await ventasService.crearVenta(payload);
+            // resp esperado (ideal): { success, message, data }
+            // fallback: si alguna vez vuelve directo, resp sería la venta
             const venta = resp?.data || resp;
-            if (venta?.credito_id) setCreditoInfo({ credito_id: venta.credito_id });
+
+            const okMsg = extractMessage(resp, 'Venta financiada creada correctamente');
+
+            // Cerramos loader
+            Swal.close();
+
+            const creditoId = venta?.credito_id || null;
+            if (creditoId) setCreditoInfo({ credito_id: creditoId });
+
+            await Swal.fire({
+                title: 'Listo',
+                html: `
+                    <div style="text-align:left;font-size:14px;line-height:1.4">
+                        <div>${okMsg}</div>
+                        ${creditoId ? `<div style="margin-top:8px"><b>Crédito generado:</b> ID ${creditoId}</div>` : ''}
+                    </div>
+                `,
+                icon: 'success',
+                confirmButtonText: 'Aceptar',
+                confirmButtonColor: '#2563eb',
+            });
+
             onCreated?.(venta);
-        } catch (e) {
-            setError(e?.message || 'Error al crear la venta financiada');
+        } catch (e2) {
+            // Cerramos loader si estaba
+            try { Swal.close(); } catch { }
+
+            const msgErr = e2?.message || 'Error al crear la venta financiada';
+            setError(msgErr);
+
+            await Swal.fire({
+                title: 'No se pudo guardar',
+                text: msgErr,
+                icon: 'error',
+                confirmButtonText: 'Entendido',
+                confirmButtonColor: '#2563eb',
+            });
         } finally {
             setSaving(false);
         }
