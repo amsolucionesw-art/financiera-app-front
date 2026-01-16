@@ -1,6 +1,6 @@
 // src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import PrivateRoute from './routes/privateRoute';
+import PrivateRoute from './routes/PrivateRoute';
 import PrivateRouteConRol from './routes/PrivateRouteConRol';
 import Dashboard from './pages/Dashboard';
 import Welcome from './pages/Welcome';
