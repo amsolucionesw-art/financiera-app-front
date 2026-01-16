@@ -1,19 +1,57 @@
 // src/services/apiClient.js
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
-
-/** Normaliza y une base + path en forma segura */
-const normalizeBase = (url) => (url || '').replace(/\/+$/, '');
-const normalizePath = (p) => `/${String(p || '').replace(/^\/+/, '')}`;
 
 /**
- * Construye la URL final. Si `path` es absoluto (http/https), se usa tal cual.
- * Si viene relativo, se antepone API_URL y se agregan params (si hay).
+ * ─────────────────────────────────────────────────────────────
+ * Config de API
+ * 1) Si existe VITE_API_URL -> se usa tal cual (ej: "http://localhost:3000/api")
+ * 2) Si no existe, se arma con:
+ *    - VITE_API_BASE   (ej: "http://localhost:3000" | "" para same-origin)
+ *    - VITE_API_PREFIX (ej: "/api")
+ * 3) Fallback final: "/api" (same-origin, ideal para producción con reverse proxy)
+ * ─────────────────────────────────────────────────────────────
+ */
+
+const normalizeBase = (url) => (url || '').trim().replace(/\/+$/, '');
+const normalizePrefix = (p) => {
+    if (p == null) return '/api';
+    const s = String(p).trim();
+    if (s === '') return ''; // permite sin prefijo si lo desean
+    const withSlash = s.startsWith('/') ? s : `/${s}`;
+    return withSlash.replace(/\/+$/, '');
+};
+
+const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();
+const API_BASE = (import.meta.env.VITE_API_BASE || '').trim(); // opcional
+const API_PREFIX = normalizePrefix(import.meta.env.VITE_API_PREFIX || '/api');
+
+const API_URL =
+    RAW_API_URL ||
+    (API_BASE ? `${normalizeBase(API_BASE)}${API_PREFIX}` : API_PREFIX);
+
+/** Normaliza y une base + path en forma segura */
+const normalizePath = (p) => `/${String(p || '').replace(/^\/+/, '')}`;
+
+/** Crea un URL object aun si la URL es relativa (usa origin del browser) */
+const toURL = (maybeRelativeOrAbsolute) => {
+    const s = String(maybeRelativeOrAbsolute);
+    // Absoluta
+    if (/^https?:\/\//i.test(s)) return new URL(s);
+    // Relativa: necesita base
+    return new URL(s, window.location.origin);
+};
+
+/**
+ * Construye la URL final.
+ * - Si `path` es absoluto (http/https), se usa tal cual.
+ * - Si viene relativo, se antepone API_URL y se agregan params (si hay).
  */
 const buildURL = (path, params = null) => {
+    const raw = String(path || '');
+
     // Passthrough si es URL absoluta
-    if (/^https?:\/\//i.test(String(path))) {
-        if (!params) return String(path);
-        const urlAbs = new URL(String(path));
+    if (/^https?:\/\//i.test(raw)) {
+        if (!params) return raw;
+        const urlAbs = new URL(raw);
         Object.entries(params).forEach(([k, v]) => {
             if (v === undefined || v === null) return;
             if (Array.isArray(v)) v.forEach((item) => urlAbs.searchParams.append(k, item));
@@ -23,15 +61,17 @@ const buildURL = (path, params = null) => {
     }
 
     const base = normalizeBase(API_URL);
-    const full = `${base}${normalizePath(path)}`;
+    const full = `${base}${normalizePath(raw)}`;
+
     if (!params) return full;
 
-    const url = new URL(full);
+    const url = toURL(full);
     Object.entries(params).forEach(([k, v]) => {
         if (v === undefined || v === null) return;
         if (Array.isArray(v)) v.forEach((item) => url.searchParams.append(k, item));
         else url.searchParams.append(k, v);
     });
+
     return url.toString();
 };
 
@@ -82,11 +122,10 @@ export async function apiFetch(path, options = {}) {
         headers: customHeaders,
         body,
         params,
-        fullResponse = false, // ✅ nuevo: permite recuperar {success,message,data}
+        fullResponse = false,
         ...rest
     } = options;
 
-    // Detectar si el body es "especial" (no JSON)
     const isSpecialBody =
         (typeof FormData !== 'undefined' && body instanceof FormData) ||
         (typeof Blob !== 'undefined' && body instanceof Blob) ||
@@ -95,12 +134,11 @@ export async function apiFetch(path, options = {}) {
 
     // Merge headers
     const headers = { ...getAuthHeaders(), ...customHeaders };
-    // Para FormData/Blob/URLSearchParams quitamos Content-Type (el navegador setea boundary correcto)
     if (isSpecialBody && headers['Content-Type']) {
         delete headers['Content-Type'];
     }
 
-    // Normaliza body: acepta string ya serializado u objeto plano
+    // Normaliza body
     let finalBody = body;
     if (!isSpecialBody && finalBody !== undefined && finalBody !== null && typeof finalBody !== 'string') {
         finalBody = JSON.stringify(finalBody);
@@ -110,15 +148,12 @@ export async function apiFetch(path, options = {}) {
 
     const res = await fetch(url, {
         headers,
-        // credentials: 'include',   <-- no se usa para evitar problemas CORS
         body: finalBody,
         ...rest,
     });
 
-    // 204 No Content
     if (res.status === 204) return null;
 
-    // Intenta parsear JSON si corresponde
     let payload = null;
     const ct = res.headers.get('Content-Type') || '';
     if (ct.includes('application/json')) {
@@ -128,7 +163,6 @@ export async function apiFetch(path, options = {}) {
             payload = null;
         }
     } else {
-        // Si no es JSON, devolvemos el texto por compat
         try {
             payload = await res.text();
         } catch {
@@ -138,9 +172,7 @@ export async function apiFetch(path, options = {}) {
 
     if (!res.ok) {
         const message = (payload && (payload.message || payload.error)) || res.statusText || 'Error en API';
-
         const err = new Error(message);
-        // Metadata útil para manejo en UI si querés
         err.status = res.status;
         err.payload = payload;
         if (payload && Array.isArray(payload.errors)) {
@@ -149,22 +181,16 @@ export async function apiFetch(path, options = {}) {
         throw err;
     }
 
-    // ✅ Si pedimos fullResponse, devolvemos el payload completo tal cual.
     if (fullResponse) return payload;
 
-    // Default (compat): si viene { data }, devolvemos data; sino payload directo
     return payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
 }
 
 /* ───────────── Atajos cómodos ───────────── */
 export const apiGet = (path, opts = {}) => apiFetch(path, { method: 'GET', ...opts });
-
 export const apiPost = (path, body, opts = {}) => apiFetch(path, { method: 'POST', body, ...opts });
-
 export const apiPut = (path, body, opts = {}) => apiFetch(path, { method: 'PUT', body, ...opts });
-
 export const apiPatch = (path, body, opts = {}) => apiFetch(path, { method: 'PATCH', body, ...opts });
-
 export const apiDelete = (path, opts = {}) => apiFetch(path, { method: 'DELETE', ...opts });
 
 export default apiFetch;

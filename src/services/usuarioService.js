@@ -2,9 +2,14 @@
 import { apiFetch } from './apiClient';
 import { jwtDecode } from 'jwt-decode';
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX || '';  // p. ej. "/api" o ""
-const BASE = `${API_PREFIX}/usuarios`;
-const ZONAS_BASE = `${API_PREFIX}/zonas`;
+/**
+ * IMPORTANTÍSIMO (staging / prod):
+ * - NO concatenar VITE_API_PREFIX acá.
+ * - El prefijo/base se resuelve en apiClient.js (VITE_API_URL | VITE_API_BASE + VITE_API_PREFIX | '/api').
+ * Así evitamos duplicar '/api/api/...'.
+ */
+const BASE = '/usuarios';
+const ZONAS_BASE = '/zonas';
 
 /** Extrae el user id del JWT (acepta sub | userId | id) */
 const getUserIdFromToken = () => {
@@ -45,39 +50,33 @@ export const obtenerMiPerfil = async () => {
 };
 
 /** Usuarios (listado, con params opcionales en query) */
-export const obtenerUsuarios = (params = {}) =>
-    apiFetch(`${BASE}`, { params });
+export const obtenerUsuarios = (params = {}) => apiFetch(`${BASE}`, { params });
 
 /** Un usuario por ID */
-export const obtenerUsuarioPorId = (id) =>
-    apiFetch(`${BASE}/${id}`);
+export const obtenerUsuarioPorId = (id) => apiFetch(`${BASE}/${id}`);
 
 /** Crear usuario */
 export const crearUsuario = (usuario) =>
     apiFetch(`${BASE}`, {
         method: 'POST',
-        body: usuario
+        body: usuario,
     });
 
 /** Actualizar usuario */
 export const actualizarUsuario = (id, usuario) =>
     apiFetch(`${BASE}/${id}`, {
         method: 'PUT',
-        body: usuario
+        body: usuario,
     });
 
 /** Eliminar usuario */
-export const eliminarUsuario = (id) =>
-    apiFetch(`${BASE}/${id}`, { method: 'DELETE' });
+export const eliminarUsuario = (id) => apiFetch(`${BASE}/${id}`, { method: 'DELETE' });
 
 /** Cobradores (básico: id + nombre_completo) → ideal para <select> */
-export const obtenerCobradoresBasico = () =>
-    apiFetch(`${BASE}/cobradores`);
+export const obtenerCobradoresBasico = () => apiFetch(`${BASE}/cobradores`);
 
 /** Cobradores con sus zonas asignadas (para vistas que necesiten cobertura por zonas) */
-export const obtenerCobradoresConZonas = () =>
-    apiFetch(`${BASE}/cobradores/zonas`);
+export const obtenerCobradoresConZonas = () => apiFetch(`${BASE}/cobradores/zonas`);
 
 /** Zonas (por si necesitas cargar/combos, con params opcionales) */
-export const obtenerZonas = (params = {}) =>
-    apiFetch(`${ZONAS_BASE}`, { params });
+export const obtenerZonas = (params = {}) => apiFetch(`${ZONAS_BASE}`, { params });

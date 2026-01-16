@@ -24,7 +24,7 @@ import {
     obtenerColumnasImport,
     importarClientes
 } from "../services/clienteService";
-import { jwtDecode } from "jwt-decode";
+import { getRolId } from "../services/authService";
 
 const Clientes = () => {
     const [clientes, setClientes] = useState([]);
@@ -33,15 +33,9 @@ const Clientes = () => {
     const navigate = useNavigate();
 
     // ─────────────────────────────────────────────────────
-    // Roles / permisos
+    // Roles / permisos (centralizado)
     // ─────────────────────────────────────────────────────
-    const token = localStorage.getItem("token");
-    let rol_id = null;
-    try {
-        rol_id = token ? (jwtDecode(token)?.rol_id ?? null) : null;
-    } catch {
-        rol_id = null;
-    }
+    const rol_id = getRolId();
 
     const esSuperAdmin = rol_id === 0;
     const esAdmin = rol_id === 1;
@@ -49,8 +43,8 @@ const Clientes = () => {
 
     const puedeCrearClientes = esSuperAdmin || esAdmin;          // crear clientes
     const puedeCrearCreditos = esSuperAdmin || esAdmin;          // crear créditos
-    const puedeEditarClientes = esSuperAdmin;                    // editar clientes SOLO super admin
-    const puedeEliminarClientes = esSuperAdmin || esAdmin;       // eliminar clientes super admin + admin
+    const puedeEditarClientes = esSuperAdmin || esAdmin;         // ✅ editar clientes superadmin + admin
+    const puedeEliminarClientes = esSuperAdmin;                  // ✅ eliminar clientes SOLO superadmin
     const puedeVerCreditos = esSuperAdmin || esAdmin;            // ver créditos
     const puedeUsarImportador = esSuperAdmin || esAdmin;         // importación masiva: super admin + admin
 
@@ -204,7 +198,7 @@ const Clientes = () => {
         if (!puedeEliminarClientes) {
             Swal.fire(
                 "Sin permisos",
-                "Solo el Super Administrador o Administrador pueden eliminar clientes.",
+                "Solo el Super Administrador puede eliminar clientes.",
                 "info"
             );
             return;
@@ -233,7 +227,7 @@ const Clientes = () => {
             await cargarClientes();
             Swal.fire("Eliminado", "El cliente ha sido eliminado.", "success");
         } catch (error) {
-            Swal.fire("Error", "No se pudo eliminar el cliente.", "error");
+            Swal.fire("Error", error?.message || "No se pudo eliminar el cliente.", "error");
         }
     };
 

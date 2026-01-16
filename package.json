@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:lan": "vite --host 0.0.0.0 --port 5174 --strictPort",
     "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preview:lan": "vite preview --host 0.0.0.0 --port 4173 --strictPort",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@headlessui/react": "^2.2.4",
@@ -42,3 +44,4 @@
     "vite": "^6.3.5"
   }
 }
+

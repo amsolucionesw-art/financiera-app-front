@@ -1,3 +1,5 @@
+// src/pages/ClienteForm.jsx
+
 import { useEffect, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useNavigate, useParams } from "react-router-dom";
@@ -10,6 +12,7 @@ import {
   subirDniFoto,
 } from "../services/clienteService";
 import { obtenerCobradoresConZonas } from "../services/usuarioService";
+import { getRolId } from "../services/authService";
 
 const ClienteForm = () => {
   const navigate = useNavigate();
@@ -21,7 +24,6 @@ const ClienteForm = () => {
     control,
     handleSubmit,
     setValue,
-    getValues,
     formState: { errors, isSubmitting },
   } = useForm();
 
@@ -29,6 +31,21 @@ const ClienteForm = () => {
   const [zonasDisponibles, setZonasDisponibles] = useState([]);
   const [dniFoto, setDniFoto] = useState(null);
   const [dniFotoUrl, setDniFotoUrl] = useState(null);
+
+  // ✅ Rol del usuario logueado (centralizado)
+  const [rolId, setRolId] = useState(null);
+
+  useEffect(() => {
+    // Leemos el rol desde authService (evita duplicación y manejo manual de tokens)
+    const rid = getRolId();
+    setRolId(rid != null ? Number(rid) : null);
+  }, []);
+
+  const esSuperadmin = Number(rolId) === 0;
+  const esAdmin = Number(rolId) === 1;
+
+  // ✅ Regla: Admin puede editar cliente, pero NO puede editar DNI (solo en edición)
+  const bloquearEdicionDni = esEdicion && esAdmin;
 
   useEffect(() => {
     const cargarCobradores = async () => {
@@ -53,7 +70,7 @@ const ClienteForm = () => {
         setDniFotoUrl(cliente.dni_foto || null);
 
         const idCobrador = parseInt(cliente.cobrador);
-        const cobradorEncontrado = cobradores.find(c => c.id === idCobrador);
+        const cobradorEncontrado = cobradores.find((c) => c.id === idCobrador);
         if (cobradorEncontrado) {
           setZonasDisponibles(cobradorEncontrado.zonas || []);
         }
@@ -63,12 +80,12 @@ const ClienteForm = () => {
     };
 
     cargarCliente();
-  }, [esEdicion, id, cobradores]);
+  }, [esEdicion, id, cobradores, setValue]);
 
   const cobradorSeleccionado = useWatch({ control, name: "cobrador" });
 
   useEffect(() => {
-    const c = cobradores.find(x => x.id === parseInt(cobradorSeleccionado));
+    const c = cobradores.find((x) => x.id === parseInt(cobradorSeleccionado));
     setZonasDisponibles(c ? c.zonas : []);
   }, [cobradorSeleccionado, cobradores]);
 
@@ -81,28 +98,51 @@ const ClienteForm = () => {
         if (!data.dni_foto && dniFotoUrl) {
           data.dni_foto = dniFotoUrl.split("/").pop();
         }
+
+        // ✅ Hardening UX: si admin edita, forzamos a no mandar "dni" aunque esté deshabilitado (por si algún browser/autofill)
+        if (bloquearEdicionDni) {
+          const { dni, ...rest } = data;
+          data = rest;
+        }
+
         await actualizarCliente(id, data);
       } else {
         const res = await crearCliente(data);
         clienteId = res.id;
       }
 
+      // ✅ Subida de foto DNI: solo superadmin (el backend ya lo bloquea, acá mejoramos UX)
       if (dniFoto && clienteId) {
-        const uploadRes = await subirDniFoto(clienteId, dniFoto);
-        nuevaFotoUrl = uploadRes?.url ?? dniFotoUrl;
-        setDniFotoUrl(nuevaFotoUrl);
+        if (!esSuperadmin) {
+          Swal.fire(
+            "Sin permisos",
+            "Solo el superadmin puede actualizar la foto del DNI.",
+            "warning"
+          );
+        } else {
+          const uploadRes = await subirDniFoto(clienteId, dniFoto);
+          nuevaFotoUrl = uploadRes?.url ?? dniFotoUrl;
+          setDniFotoUrl(nuevaFotoUrl);
+        }
       }
 
-      Swal.fire("Éxito", esEdicion ? "Cliente actualizado" : "Cliente creado", "success");
+      Swal.fire(
+        "Éxito",
+        esEdicion ? "Cliente actualizado" : "Cliente creado",
+        "success"
+      );
       navigate("/clientes");
     } catch (error) {
       console.error("Error al guardar cliente:", error);
-      Swal.fire("Error", "No se pudo guardar el cliente", "error");
+      Swal.fire("Error", error?.message || "No se pudo guardar el cliente", "error");
     }
   };
 
   const inputClass =
     "w-full rounded-md border-gray-300 px-3 py-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-200";
+
+  const inputClassDisabled =
+    inputClass + " bg-gray-100 text-gray-600 cursor-not-allowed";
 
   return (
     <div className="max-w-2xl mx-auto bg-white shadow ring-1 ring-gray-200 rounded-xl p-6">
@@ -110,7 +150,10 @@ const ClienteForm = () => {
         {esEdicion ? "Editar Cliente" : "Nuevo Cliente"}
       </h2>
 
-      <form onSubmit={handleSubmit(onSubmit)} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <form
+        onSubmit={handleSubmit(onSubmit)}
+        className="grid grid-cols-1 md:grid-cols-2 gap-4"
+      >
         {[
           "nombre",
           "apellido",
@@ -125,21 +168,48 @@ const ClienteForm = () => {
           "provincia",
           "localidad",
           "fecha_nacimiento",
-          "fecha_registro"
+          "fecha_registro",
         ].map((name) => {
           const label = name
             .replace("_", " ")
             .replace(/\b\w/g, (l) => l.toUpperCase());
+
           const type = name.includes("fecha") ? "date" : "text";
-          const required = ["nombre", "apellido", "dni", "telefono", "direccion", "fecha_nacimiento", "fecha_registro"].includes(name);
+
+          const baseRequired = [
+            "nombre",
+            "apellido",
+            "dni",
+            "telefono",
+            "direccion",
+            "fecha_nacimiento",
+            "fecha_registro",
+          ].includes(name);
+
+          // ✅ DNI requerido solo cuando NO está bloqueado (creación o superadmin)
+          const required =
+            baseRequired && !(name === "dni" && bloquearEdicionDni);
+
+          const isDni = name === "dni";
+          const disabled = isDni && bloquearEdicionDni;
+
           return (
             <div key={name} className="md:col-span-1">
               <label className="block text-sm mb-1">{label}</label>
+
               <input
                 type={type}
+                disabled={disabled}
                 {...register(name, required ? { required: "Requerido" } : {})}
-                className={inputClass}
+                className={disabled ? inputClassDisabled : inputClass}
               />
+
+              {isDni && bloquearEdicionDni && (
+                <p className="text-xs text-gray-500 mt-1">
+                  El rol admin no puede modificar el DNI.
+                </p>
+              )}
+
               {errors[name] && (
                 <p className="text-xs text-red-500">{errors[name].message}</p>
               )}
@@ -159,35 +229,55 @@ const ClienteForm = () => {
             <option value="Desaprobado">Desaprobado</option>
           </select>
           {errors.historial_crediticio && (
-            <p className="text-xs text-red-500">{errors.historial_crediticio.message}</p>
+            <p className="text-xs text-red-500">
+              {errors.historial_crediticio.message}
+            </p>
           )}
         </div>
 
         <div className="md:col-span-2">
           <label className="block text-sm mb-1">Observaciones</label>
-          <textarea {...register("observaciones")} className={inputClass} rows={3} />
+          <textarea
+            {...register("observaciones")}
+            className={inputClass}
+            rows={3}
+          />
         </div>
 
         <div>
           <label className="block text-sm mb-1">Cobrador</label>
-          <select {...register("cobrador", { required: "Requerido" })} className={inputClass}>
+          <select
+            {...register("cobrador", { required: "Requerido" })}
+            className={inputClass}
+          >
             <option value="">Seleccione</option>
             {cobradores.map((c) => (
-              <option key={c.id} value={c.id}>{c.nombre_completo}</option>
+              <option key={c.id} value={c.id}>
+                {c.nombre_completo}
+              </option>
             ))}
           </select>
-          {errors.cobrador && <p className="text-xs text-red-500">{errors.cobrador.message}</p>}
+          {errors.cobrador && (
+            <p className="text-xs text-red-500">{errors.cobrador.message}</p>
+          )}
         </div>
 
         <div>
           <label className="block text-sm mb-1">Zona</label>
-          <select {...register("zona", { required: "Requerido" })} className={inputClass}>
+          <select
+            {...register("zona", { required: "Requerido" })}
+            className={inputClass}
+          >
             <option value="">Seleccione</option>
             {zonasDisponibles.map((z) => (
-              <option key={z.id} value={z.id}>{z.nombre}</option>
+              <option key={z.id} value={z.id}>
+                {z.nombre}
+              </option>
             ))}
           </select>
-          {errors.zona && <p className="text-xs text-red-500">{errors.zona.message}</p>}
+          {errors.zona && (
+            <p className="text-xs text-red-500">{errors.zona.message}</p>
+          )}
         </div>
 
         {dniFotoUrl && (
@@ -201,46 +291,65 @@ const ClienteForm = () => {
           </div>
         )}
 
-        <div className="md:col-span-2">
-          <label className="block text-sm mb-1">Subir nueva foto del DNI</label>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const file = e.target.files[0];
-              if (!file) return;
+        {/* ✅ Solo superadmin puede subir nueva foto del DNI */}
+        {esSuperadmin && (
+          <div className="md:col-span-2">
+            <label className="block text-sm mb-1">Subir nueva foto del DNI</label>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
 
-              const validTypes = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
-              const maxSize = 2 * 1024 * 1024;
+                const validTypes = [
+                  "image/jpeg",
+                  "image/png",
+                  "image/jpg",
+                  "image/webp",
+                ];
+                const maxSize = 2 * 1024 * 1024;
 
-              if (!validTypes.includes(file.type)) {
-                Swal.fire("Formato inválido", "Solo se permiten imágenes JPG, PNG o WEBP", "error");
-                return;
-              }
+                if (!validTypes.includes(file.type)) {
+                  Swal.fire(
+                    "Formato inválido",
+                    "Solo se permiten imágenes JPG, PNG o WEBP",
+                    "error"
+                  );
+                  return;
+                }
 
-              if (file.size > maxSize) {
-                Swal.fire("Archivo demasiado grande", "La imagen no puede superar los 2MB", "error");
-                return;
-              }
+                if (file.size > maxSize) {
+                  Swal.fire(
+                    "Archivo demasiado grande",
+                    "La imagen no puede superar los 2MB",
+                    "error"
+                  );
+                  return;
+                }
 
-              setDniFoto(file);
-            }}
-            className="text-sm"
-          />
-        </div>
+                setDniFoto(file);
+              }}
+              className="text-sm"
+            />
+          </div>
+        )}
 
         <div className="md:col-span-2 flex justify-end gap-3 pt-4">
           <button
             type="button"
             onClick={() => navigate("/clientes")}
-            className="inline-flex items-center gap-1 rounded-md bg-gray-200 px-4 py-2 text-sm hover:bg-gray-300">
+            className="inline-flex items-center gap-1 rounded-md bg-gray-200 px-4 py-2 text-sm hover:bg-gray-300"
+          >
             <X size={16} /> Cancelar
           </button>
           <button
             type="submit"
             disabled={isSubmitting}
-            className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-70">
-            <CheckCircle2 size={16} /> {esEdicion ? "Actualizar" : "Crear"} Cliente
+            className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-70"
+          >
+            <CheckCircle2 size={16} />{" "}
+            {esEdicion ? "Actualizar" : "Crear"} Cliente
           </button>
         </div>
       </form>
