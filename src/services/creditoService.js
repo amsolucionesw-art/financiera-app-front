@@ -1,13 +1,14 @@
 // src/services/creditoService.js
 
-import apiFetch from './apiClient';
+import apiFetch from './apiClient.js';
 
 /* ───────────────── Config & helpers de ruta ───────────────── */
 
 const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // por defecto sin prefijo
-const API_URL = import.meta.env.VITE_API_URL || ''; // base absoluta para fetch directo (PDF)
+const API_URL_RAW = import.meta.env.VITE_API_URL || ''; // base absoluta para fetch directo (PDF)
+const API_URL = String(API_URL_RAW || '').replace(/\/+$/g, ''); // evita doble //
 
-// Une segmentos asegurando que no queden dobles slashes internos
+/* Une segmentos asegurando que no queden dobles slashes internos */
 const joinPath = (...parts) =>
   '/' +
   parts
@@ -70,6 +71,48 @@ const unwrap = (resp) => {
   if (!resp) return resp;
   if (resp?.data !== undefined) return resp.data;
   return resp;
+};
+
+const lower = (v) => String(v ?? '').toLowerCase();
+
+/* ───────────────── Normalización de errores (CRÍTICO para UI) ───────────────── */
+/**
+ * Objetivo:
+ * - preservar status + message que vienen del backend
+ * - soportar distintas formas (fetch, axios-like, throws "Error" simple)
+ * - devolver SIEMPRE un Error con props {status, data} para que el front pueda leerlo
+ */
+const normalizeApiError = (e, fallbackMessage = 'Error de red o servidor.') => {
+  const status =
+    e?.status ??
+    e?.response?.status ??
+    e?.response?.data?.status ??
+    e?.data?.status ??
+    null;
+
+  const data = e?.response?.data ?? e?.data ?? null;
+
+  const message =
+    data?.message ??
+    data?.error ??
+    e?.message ??
+    fallbackMessage;
+
+  const err = new Error(message || fallbackMessage);
+  if (status !== null && status !== undefined) err.status = status;
+  if (data !== null && data !== undefined) err.data = data;
+
+  if (e?.stack) err.stack = e.stack;
+
+  return err;
+};
+
+const apiFetchSafe = async (url, options, fallbackMessage) => {
+  try {
+    return await apiFetch(url, options);
+  } catch (e) {
+    throw normalizeApiError(e, fallbackMessage);
+  }
 };
 
 /* ───────────────── Helpers de auth/headers (para fetch directo) ───────────────── */
@@ -149,15 +192,6 @@ export const previewRefinanciacion = ({
 
 /* ───────────────── Refinanciación: normalización de datos ───────────────── */
 
-/**
- * Normaliza la info de refinanciación para que el UI pueda marcar:
- * - R ROJA: crédito refinanciado (estado === 'refinanciado')
- * - R VERDE: crédito creado a partir de una refinanciación (tiene id_credito_origen)
- *
- * Además, asegura compatibilidad de nombres:
- * - si el back envía `id_credito_origen`, agregamos alias `credito_origen_id`
- * - agrega flags booleanos por si el UI los prefiere
- */
 const normalizeRefiFieldsCredito = (credito) => {
   if (!credito || typeof credito !== 'object') return credito;
 
@@ -180,7 +214,7 @@ const normalizeRefiFieldsCredito = (credito) => {
   }
 
   // Flags consistentes para UI
-  const estado = String(credito.estado || '').toLowerCase();
+  const estado = lower(credito.estado);
   credito.es_credito_refinanciado = estado === 'refinanciado';
   credito.es_credito_de_refinanciacion = tieneOrigen;
 
@@ -214,48 +248,235 @@ const normalizeRefiFieldsDeep = (payload) => {
   return payload;
 };
 
+/* ───────────────── LIBRE: helpers de resumen (anti-parpadeo) ───────────────── */
+
+/**
+ * Cache chica para evitar múltiples requests por re-renders (parpadeo).
+ * TTL cortísimo: suficiente para el render inicial + efectos.
+ */
+const __resumenLibreCache = new Map(); // key -> { ts, data }
+const __RESUMEN_TTL_MS = 3500;
+
+const cacheKeyResumenLibre = (id, fecha) => `${Number(id)}|${fecha || 'hoy'}`;
+
+const getResumenLibreCached = (id, fecha) => {
+  const key = cacheKeyResumenLibre(id, fecha);
+  const hit = __resumenLibreCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > __RESUMEN_TTL_MS) {
+    __resumenLibreCache.delete(key);
+    return null;
+  }
+  return hit.data;
+};
+
+const setResumenLibreCached = (id, fecha, data) => {
+  const key = cacheKeyResumenLibre(id, fecha);
+  __resumenLibreCache.set(key, { ts: Date.now(), data });
+};
+
+/**
+ * ✅ NUEVO: invalida cache del resumen LIBRE.
+ * - si pasás fecha => invalida esa key puntual
+ * - si NO pasás fecha => invalida todas las keys de ese crédito
+ */
+export const invalidarResumenLibreCache = (id, fecha) => {
+  const numId = Number(id);
+  if (!Number.isFinite(numId) || numId <= 0) return;
+
+  if (fecha) {
+    __resumenLibreCache.delete(cacheKeyResumenLibre(numId, fecha));
+    return;
+  }
+
+  const prefix = `${numId}|`;
+  for (const key of __resumenLibreCache.keys()) {
+    if (String(key).startsWith(prefix)) __resumenLibreCache.delete(key);
+  }
+};
+
+/* ───────────────── LIBRE: normalización robusta ───────────────── */
+
+const normalizeResumenLibre = (raw) => {
+  const r = raw && typeof raw === 'object' ? raw : {};
+
+  const saldo_capital = sanitizeNumber(
+    r.saldo_capital ??
+      r.saldo_capital_pendiente ??
+      r.capital_pendiente ??
+      r.capital ??
+      0
+  );
+
+  // HOY (ciclo actual) raw
+  const interesHoyRaw =
+    r.interes_ciclo_hoy ?? r.interes_pendiente_hoy ?? r.interes_hoy ?? null;
+  const moraHoyRaw =
+    r.mora_ciclo_hoy ?? r.mora_pendiente_hoy ?? r.mora_hoy ?? null;
+
+  const interes_ciclo_hoy = sanitizeNumber(interesHoyRaw);
+  const mora_ciclo_hoy = sanitizeNumber(moraHoyRaw);
+
+  // TOTAL (acumulado) raw
+  const interesTotalRaw =
+    r.interes_pendiente_total ??
+    r.interes_total ??
+    r.interes_pendiente ??
+    r.interes ??
+    null;
+
+  const moraTotalRaw =
+    r.mora_pendiente_total ??
+    r.mora_total ??
+    r.mora_pendiente ??
+    r.mora ??
+    null;
+
+  // total “real” = max(total, hoy)
+  const interes_pendiente_total = Math.max(
+    sanitizeNumber(interesTotalRaw),
+    interes_ciclo_hoy
+  );
+
+  const mora_pendiente_total = Math.max(
+    sanitizeNumber(moraTotalRaw),
+    mora_ciclo_hoy
+  );
+
+  // meta opcional (si el back la manda)
+  const extractCiclo = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === 'string') {
+      const s = v.trim();
+      const first = s.includes('/') ? s.split('/')[0] : s;
+      const n = Number(first);
+      return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
+    }
+    const n = sanitizeInt(v, 1);
+    return n > 0 ? n : null;
+  };
+
+  const ciclo_actual = extractCiclo(r.ciclo_actual ?? r.ciclo ?? null);
+  const inicio_ciclo = r.inicio_ciclo ?? null;
+  const fin_ciclo = r.fin_ciclo ?? null;
+
+  const total_no_capital = +(
+    interes_pendiente_total + mora_pendiente_total
+  ).toFixed(2);
+
+  const total_actual_calc = +(saldo_capital + total_no_capital).toFixed(2);
+
+  const totalActualIn = sanitizeNumber(
+    r.total_actual ??
+      r.total_liquidacion_hoy ??
+      r.total_a_cancelar_hoy ??
+      r.total_pagar_hoy ??
+      r.total ??
+      0
+  );
+
+  const total_actual =
+    totalActualIn > 0 && totalActualIn >= total_actual_calc - 0.01
+      ? +totalActualIn.toFixed(2)
+      : total_actual_calc;
+
+  const total_ciclo_hoy = +(interes_ciclo_hoy + mora_ciclo_hoy).toFixed(2);
+
+  return {
+    ...r,
+
+    saldo_capital: +saldo_capital.toFixed(2),
+
+    interes_pendiente_total: +interes_pendiente_total.toFixed(2),
+    mora_pendiente_total: +mora_pendiente_total.toFixed(2),
+
+    interes_ciclo_hoy: +interes_ciclo_hoy.toFixed(2),
+    mora_ciclo_hoy: +mora_ciclo_hoy.toFixed(2),
+
+    interes_pendiente: +interes_pendiente_total.toFixed(2),
+    mora_pendiente: +mora_pendiente_total.toFixed(2),
+
+    total_no_capital,
+    total_actual,
+    total_ciclo_hoy,
+
+    ciclo_actual,
+    inicio_ciclo,
+    fin_ciclo
+  };
+};
+
 /* ───────────────── Créditos: CRUD & queries ───────────────── */
 
-/**
- * Obtiene todos los créditos (con filtros opcionales).
- * @param {object} params - { estado, cliente_id, ... }
- */
 export const obtenerCreditos = async (params = {}) => {
-  const resp = await apiFetch(BASE, { params });
+  const resp = await apiFetchSafe(BASE, { params }, 'No se pudieron obtener los créditos.');
   return normalizeRefiFieldsDeep(resp);
 };
 
-/**
- * Obtiene los créditos de un cliente con filtros del back:
- * estado, modalidad, tipo, desde (YYYY-MM-DD), hasta (YYYY-MM-DD), conCuotasVencidas (bool/1)
- */
 export const obtenerCreditosPorCliente = async (clienteId, params = {}) => {
-  const resp = await apiFetch(joinPath(BASE, 'cliente', clienteId), { params });
+  const resp = await apiFetchSafe(
+    joinPath(BASE, 'cliente', clienteId),
+    { params },
+    'No se pudieron obtener los créditos del cliente.'
+  );
   return normalizeRefiFieldsDeep(resp);
 };
 
-/** Obtiene un crédito por su ID */
 export const obtenerCreditoPorId = async (id) => {
-  const resp = await apiFetch(joinPath(BASE, id));
+  const resp = await apiFetchSafe(joinPath(BASE, id), undefined, 'No se pudo obtener el crédito.');
   return normalizeRefiFieldsDeep(resp);
 };
 
 /**
- * Resumen de crédito LIBRE (capital, interés del día y total de liquidación).
+ * Resumen de crédito LIBRE (capital, interés y mora).
  * Backend: GET /creditos/:id/resumen-libre?fecha=YYYY-MM-DD
- * @param {number|string} id
- * @param {string} [fecha] - YYYY-MM-DD (opcional)
  */
 export const obtenerResumenLibre = (id, fecha) =>
-  apiFetch(joinPath(BASE, id, 'resumen-libre'), {
-    params: fecha ? { fecha } : undefined
-  });
+  apiFetchSafe(
+    joinPath(BASE, id, 'resumen-libre'),
+    {
+      params: fecha ? { fecha } : undefined
+    },
+    'No se pudo obtener el resumen del crédito LIBRE.'
+  );
 
-/**
- * Crea un nuevo crédito.
- * - común/progresivo: el backend calcula interés proporcional (mín. 60%) y genera cuotas.
- * - libre: usa tasa por ciclo (porcentaje) y crea cuota abierta.
- */
+export const obtenerResumenLibreNormalizado = async (id, fecha, opts = {}) => {
+  const force = Boolean(opts?.force);
+
+  if (force) {
+    invalidarResumenLibreCache(id, fecha);
+  } else {
+    const cached = getResumenLibreCached(id, fecha);
+    if (cached) return cached;
+  }
+
+  const resp = await obtenerResumenLibre(id, fecha);
+  const data = normalizeResumenLibre(unwrap(resp));
+  setResumenLibreCached(id, fecha, data);
+  return data;
+};
+
+export const obtenerCreditoPorIdConResumenLibre = async (id, fecha, opts = {}) => {
+  const resp = await obtenerCreditoPorId(id);
+  const credito = unwrap(resp);
+
+  if (!credito || typeof credito !== 'object') return resp;
+
+  if (lower(credito.modalidad_credito) === 'libre') {
+    const resumen = await obtenerResumenLibreNormalizado(credito.id, fecha, {
+      force: Boolean(opts?.forceResumen)
+    });
+
+    credito.resumen_libre = resumen;
+    credito.total_actual = sanitizeNumber(resumen.total_actual);
+  }
+
+  if (resp && typeof resp === 'object' && resp.data !== undefined) {
+    return { ...resp, data: credito };
+  }
+  return credito;
+};
+
 export const crearCredito = (data) => {
   const { interes, monto_acreditar, ...rest } = data || {};
   const payload = {
@@ -263,19 +484,18 @@ export const crearCredito = (data) => {
     monto_acreditar: sanitizeNumber(monto_acreditar)
   };
   if (interes !== undefined && interes !== null && `${interes}` !== '') {
-    payload.interes = sanitizeNumber(interes); // guardamos en porcentaje (p.ej. 60)
+    payload.interes = sanitizeNumber(interes);
   }
-  return apiFetch(BASE, {
-    method: 'POST',
-    body: payload
-  });
+  return apiFetchSafe(
+    BASE,
+    {
+      method: 'POST',
+      body: payload
+    },
+    'No se pudo crear el crédito.'
+  );
 };
 
-/**
- * Actualiza un crédito existente.
- * - común/progresivo: recalcula interés proporcional y regenera cuotas.
- * - libre: recalcula referencia del ciclo; NO toca saldo_actual (lo maneja el back).
- */
 export const actualizarCredito = (id, data) => {
   const { interes, monto_acreditar, ...rest } = data || {};
   const payload = {
@@ -285,26 +505,24 @@ export const actualizarCredito = (id, data) => {
   if (interes !== undefined && interes !== null && `${interes}` !== '') {
     payload.interes = sanitizeNumber(interes);
   }
-  return apiFetch(joinPath(BASE, id), {
-    method: 'PUT',
-    body: payload
-  });
+  return apiFetchSafe(
+    joinPath(BASE, id),
+    {
+      method: 'PUT',
+      body: payload
+    },
+    'No se pudo actualizar el crédito.'
+  );
 };
 
-/** Verifica si un crédito es eliminable: { eliminable: boolean, cantidadPagos: number } */
 export const verificarEliminableCredito = async (id) => {
-  const resp = await apiFetch(joinPath(BASE, id, 'eliminable'));
+  const resp = await apiFetchSafe(joinPath(BASE, id, 'eliminable'), undefined, 'No se pudo verificar si el crédito es eliminable.');
   return unwrap(resp);
 };
 
-/** Elimina un crédito (DELETE directo) */
-export const eliminarCredito = (id) => apiFetch(joinPath(BASE, id), { method: 'DELETE' });
+export const eliminarCredito = (id) =>
+  apiFetchSafe(joinPath(BASE, id), { method: 'DELETE' }, 'No se pudo eliminar el crédito.');
 
-/**
- * Elimina un crédito con pre-chequeo:
- * - Si tiene pagos, lanza Error 409 con mensaje claro.
- * - Si no, ejecuta el DELETE.
- */
 export const eliminarCreditoSeguro = async (id) => {
   const { eliminable, cantidadPagos } = await verificarEliminableCredito(id);
   if (!eliminable) {
@@ -326,10 +544,14 @@ export const refinanciarCredito = async (creditoId, { opcion, tasaManual = 0, ti
     body.cantidad_cuotas = sanitizeInt(cantidad_cuotas, 1);
   }
 
-  const resp = await apiFetch(joinPath(BASE, creditoId, 'refinanciar'), {
-    method: 'POST',
-    body
-  });
+  const resp = await apiFetchSafe(
+    joinPath(BASE, creditoId, 'refinanciar'),
+    {
+      method: 'POST',
+      body
+    },
+    'No se pudo refinanciar el crédito.'
+  );
 
   return normalizeRefiFieldsDeep(resp);
 };
@@ -341,7 +563,7 @@ export const refinanciarCreditoSeguro = async (
   const id = credito?.id;
   if (!id) throw new Error('Crédito inválido (falta id).');
 
-  const modalidad = String(credito?.modalidad_credito || '').toLowerCase();
+  const modalidad = lower(credito?.modalidad_credito);
   if (!['comun', 'progresivo', 'libre'].includes(modalidad)) {
     const err = new Error('Solo se permite refinanciar créditos de modalidad "comun", "progresivo" o "libre".');
     err.status = 400;
@@ -351,14 +573,9 @@ export const refinanciarCreditoSeguro = async (
   return refinanciarCredito(id, { opcion, tasaManual, tipo_credito, cantidad_cuotas });
 };
 
-/** Anula un crédito (superadmin) — OJO: debe existir la ruta back /creditos/:id/anular */
-export const anularCredito = (id) => apiFetch(joinPath(BASE, id, 'anular'), { method: 'POST' });
+export const anularCredito = (id) =>
+  apiFetchSafe(joinPath(BASE, id, 'anular'), { method: 'POST' }, 'No se pudo anular el crédito.');
 
-/**
- * Solicita anulación de crédito (admin)
- * Intento 1: POST /tareas/pendientes
- * Si el backend responde 404 → Intento 2: POST /tareas
- */
 export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
   const body = {
     tipo: 'anular_credito',
@@ -369,12 +586,12 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
   const pathCanonico = joinPath(API_PREFIX, 'tareas');
 
   try {
-    return await apiFetch(pathPendientes, { method: 'POST', body });
+    return await apiFetchSafe(pathPendientes, { method: 'POST', body }, 'No se pudo solicitar la anulación del crédito.');
   } catch (err) {
     const status = err?.status ?? err?.response?.status;
     const msg = (err?.message || '').toLowerCase();
     if (status === 404 || msg.includes('404')) {
-      return apiFetch(pathCanonico, { method: 'POST', body });
+      return apiFetchSafe(pathCanonico, { method: 'POST', body }, 'No se pudo solicitar la anulación del crédito.');
     }
     throw err;
   }
@@ -382,22 +599,6 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
 
 /* ───────────────── Cancelación / Liquidación ───────────────── */
 
-/**
- * CANCELAR / LIQUIDAR crédito (pago único con recibo único).
- * Backend: POST /creditos/:id/cancelar
- *
- * @param {number|string} creditoId
- * @param {object} options
- * @param {number} options.forma_pago_id
- * @param {number|string} [options.descuento_porcentaje=0]   // 0..100
- * @param {'mora'|'total'} [options.descuento_sobre='mora']
- * @param {string|null} [options.observacion=null]
- *
- * Campos compat extra (no rompen si el backend los ignora):
- * @param {'mora'|'total'|null} [options.descuento_scope]
- * @param {number|string|null} [options.descuento_mora]
- * @param {number|string|null} [options.descuento]
- */
 export const cancelarCredito = async (
   creditoId,
   {
@@ -405,8 +606,6 @@ export const cancelarCredito = async (
     descuento_porcentaje = 0,
     descuento_sobre = 'mora',
     observacion = null,
-
-    // compat extras
     descuento_scope = null,
     descuento_mora = null,
     descuento = null
@@ -422,20 +621,21 @@ export const cancelarCredito = async (
     observacion
   };
 
-  // Compat: algunos servicios del back ya vienen usando estos campos
   if (descuento_scope != null) body.descuento_scope = String(descuento_scope).toLowerCase();
   if (descuento_mora != null) body.descuento_mora = sanitizeNumber(descuento_mora);
   if (descuento != null) body.descuento = sanitizeNumber(descuento);
 
-  const resp = await apiFetch(joinPath(BASE, creditoId, 'cancelar'), {
-    method: 'POST',
-    body
-  });
+  const resp = await apiFetchSafe(
+    joinPath(BASE, creditoId, 'cancelar'),
+    {
+      method: 'POST',
+      body
+    },
+    'No se pudo cancelar/liquidar el crédito.'
+  );
 
   const data0 = unwrap(resp);
-
-  // Normalización defensiva sin perder estructuras
-  const data = (data0 && typeof data0 === 'object') ? { ...data0 } : { data: data0 };
+  const data = data0 && typeof data0 === 'object' ? { ...data0 } : { data: data0 };
 
   const numero =
     data.numero_recibo ??
@@ -446,7 +646,6 @@ export const cancelarCredito = async (
 
   if (numero != null) data.numero_recibo = numero;
 
-  // Si apiFetch devolvió {success,message}, lo preservamos si vino arriba
   if (resp && typeof resp === 'object') {
     if (data.success === undefined && resp.success !== undefined) data.success = resp.success;
     if (data.message === undefined && resp.message !== undefined) data.message = resp.message;
@@ -457,15 +656,6 @@ export const cancelarCredito = async (
 
 /* ─────────── NUEVO: Preview de liquidación (para UI en vivo) ─────────── */
 
-/**
- * Calcula un preview de liquidación en el FRONT (sin tocar el back).
- * - Para COMÚN/PROGRESIVO usa las cuotas que tengas en memoria.
- * - Para LIBRE consulta `obtenerResumenLibre` para traer interés y mora del día.
- *
- * @param {object} credito - objeto crédito con al menos { modalidad_credito, cuotas[], saldo_actual, id }
- * @param {object} options - { descuento_porcentaje, descuento_sobre: 'mora'|'total' }
- * @returns {Promise<object>}
- */
 export const previewLiquidacionCredito = async (
   credito,
   { descuento_porcentaje = 0, descuento_sobre = 'mora' } = {}
@@ -473,25 +663,26 @@ export const previewLiquidacionCredito = async (
   const pct = Math.min(Math.max(sanitizeNumber(descuento_porcentaje), 0), 100);
   const modo = String(descuento_sobre || 'mora').toLowerCase();
 
-  const modalidad = String(credito?.modalidad_credito || '').toLowerCase();
+  const modalidad = lower(credito?.modalidad_credito);
 
   let principalBase = 0;
-  let moraBase = 0;     // “no capital” total: interés + mora (en LIBRE)
-  let interesBase = 0;  // solo para UI (LIBRE)
+  let moraBase = 0; // “no capital” total: interés + mora (en LIBRE)
+  let interesBase = 0; // para UI (en LIBRE = interés total acumulado por defecto)
 
   if (modalidad === 'libre') {
-    const resumenRaw = unwrap(await obtenerResumenLibre(credito.id));
-    const capital = sanitizeNumber(resumenRaw?.saldo_capital ?? credito?.saldo_actual);
-    const interesHoy = sanitizeNumber(resumenRaw?.interes_pendiente_hoy);
-    const moraHoy = sanitizeNumber(resumenRaw?.mora_pendiente_hoy);
+    const resumen = await obtenerResumenLibreNormalizado(credito.id);
+
+    const capital = sanitizeNumber(resumen?.saldo_capital ?? credito?.saldo_actual);
+    const interesPendTotal = sanitizeNumber(resumen?.interes_pendiente_total ?? resumen?.interes_pendiente ?? 0);
+    const moraPendTotal = sanitizeNumber(resumen?.mora_pendiente_total ?? resumen?.mora_pendiente ?? 0);
 
     principalBase = +capital.toFixed(2);
-    interesBase = +interesHoy.toFixed(2);
-    moraBase = +(interesHoy + moraHoy).toFixed(2);
+    interesBase = +interesPendTotal.toFixed(2);
+    moraBase = +(interesPendTotal + moraPendTotal).toFixed(2);
   } else {
     const cuotas = Array.isArray(credito?.cuotas) ? credito.cuotas : [];
     for (const c of cuotas) {
-      const estado = String(c.estado || '').toLowerCase();
+      const estado = lower(c.estado);
       if (!['pendiente', 'parcial', 'vencida'].includes(estado)) continue;
 
       const importe = sanitizeNumber(c.importe_cuota);
@@ -514,12 +705,10 @@ export const previewLiquidacionCredito = async (
     const base = +(principalBase + moraBase).toFixed(2);
     let totalDesc = +(base * (pct / 100)).toFixed(2);
 
-    // primero se descuenta de mora, luego de principal
     descMora = Math.min(totalDesc, moraBase);
     totalDesc = +(totalDesc - descMora).toFixed(2);
     descPrincipal = Math.min(totalDesc, principalBase);
   } else {
-    // solo sobre mora
     descMora = +(moraBase * (pct / 100)).toFixed(2);
     descPrincipal = 0;
   }
@@ -531,14 +720,12 @@ export const previewLiquidacionCredito = async (
   return {
     principal_base: principalBase,
     mora_base: moraBase,
-    interes_base: interesBase, // útil para LIBRE
+    interes_base: interesBase,
     descuento_aplicado_mora: descMora,
     descuento_aplicado_principal: descPrincipal,
     total_a_pagar: totalAPagar,
-
     total_base: +(principalBase + moraBase).toFixed(2),
     total_descuento: +(descMora + descPrincipal).toFixed(2),
-
     resumen: {
       principal_neto: principalNeto,
       mora_neta: moraNeta
@@ -548,11 +735,12 @@ export const previewLiquidacionCredito = async (
 
 /* ──────────────────────── Impresión / Descarga de Ficha ──────────────────────── */
 
+// ✅ FIX: money robusto usando sanitizeNumber (evita "220.000" -> 220)
 const money = (n) =>
-  Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  sanitizeNumber(n).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const labelModalidad = (modalidad) => {
-  const m = String(modalidad || '').toLowerCase();
+  const m = lower(modalidad);
   if (m === 'comun') return 'PLAN DE CUOTAS FIJAS';
   return m.toUpperCase();
 };
@@ -560,24 +748,29 @@ const labelModalidad = (modalidad) => {
 /** Total actual (mismo criterio que el back) */
 const calcularTotalActualFront = (credito) => {
   if (!credito) return 0;
-  if (String(credito.modalidad_credito) === 'libre') {
-    // Alineado “lo mejor posible” sin llamar al resumen: capital + mora acumulada de la cuota abierta
-    const capital = Number(credito.saldo_actual || 0);
+
+  if (lower(credito.modalidad_credito) === 'libre') {
+    // ⚠️ Fallback: para LIBRE real, lo correcto es usar /resumen-libre.
+    const capital = sanitizeNumber(credito.saldo_actual || 0);
     const cuota = Array.isArray(credito.cuotas) ? credito.cuotas[0] : null;
-    const mora = Number(cuota?.intereses_vencidos_acumulados || 0);
+    const mora = sanitizeNumber(cuota?.intereses_vencidos_acumulados || 0);
     return +(capital + mora).toFixed(2);
   }
 
   let total = 0;
-  for (const c of (credito.cuotas || [])) {
-    const estado = String(c.estado || '').toLowerCase();
+  for (const c of credito.cuotas || []) {
+    const estado = lower(c.estado);
     if (!['pendiente', 'parcial', 'vencida'].includes(estado)) continue;
 
     const principalPend = Math.max(
-      +(Number(c.importe_cuota || 0) - Number(c.descuento_cuota || 0) - Number(c.monto_pagado_acumulado || 0)).toFixed(2),
+      +(
+        sanitizeNumber(c.importe_cuota || 0) -
+        sanitizeNumber(c.descuento_cuota || 0) -
+        sanitizeNumber(c.monto_pagado_acumulado || 0)
+      ).toFixed(2),
       0
     );
-    const mora = +(Number(c.intereses_vencidos_acumulados || 0).toFixed(2));
+    const mora = +sanitizeNumber(c.intereses_vencidos_acumulados || 0).toFixed(2);
     total = +(total + principalPend + mora).toFixed(2);
   }
   return total;
@@ -589,7 +782,7 @@ const construirHTMLFicha = (credito) => {
   const c = credito || {};
   const cli = c.cliente || {};
   const cuotas = Array.isArray(c.cuotas) ? c.cuotas : [];
-  const totalActual = Number(c.total_actual ?? calcularTotalActualFront(c));
+  const totalActual = Number(c.total_actual ?? c.total_actual_hoy ?? calcularTotalActualFront(c));
   const fechaEmision = new Date().toISOString().slice(0, 10);
 
   const vtosValidos = cuotas
@@ -630,12 +823,16 @@ const construirHTMLFicha = (credito) => {
   const rows = cuotas
     .map((ct) => {
       const principalPend = Math.max(
-        +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
+        +(
+          sanitizeNumber(ct.importe_cuota || 0) -
+          sanitizeNumber(ct.descuento_cuota || 0) -
+          sanitizeNumber(ct.monto_pagado_acumulado || 0)
+        ).toFixed(2),
         0
       );
-      const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
+      const mora = +sanitizeNumber(ct.intereses_vencidos_acumulados || 0).toFixed(2);
       const saldoCuota = +(principalPend + mora).toFixed(2);
-      const vto = ct.fecha_vencimiento === LIBRE_VTO_FICTICIO ? '—' : (ct.fecha_vencimiento || '-');
+      const vto = ct.fecha_vencimiento === LIBRE_VTO_FICTICIO ? '—' : ct.fecha_vencimiento || '-';
       return `
       <tr>
         <td>#${ct.numero_cuota}</td>
@@ -654,10 +851,14 @@ const construirHTMLFicha = (credito) => {
   const totales = cuotas.reduce(
     (acc, ct) => {
       const principalPend = Math.max(
-        +(Number(ct.importe_cuota || 0) - Number(ct.descuento_cuota || 0) - Number(ct.monto_pagado_acumulado || 0)).toFixed(2),
+        +(
+          sanitizeNumber(ct.importe_cuota || 0) -
+          sanitizeNumber(ct.descuento_cuota || 0) -
+          sanitizeNumber(ct.monto_pagado_acumulado || 0)
+        ).toFixed(2),
         0
       );
-      const mora = +(Number(ct.intereses_vencidos_acumulados || 0).toFixed(2));
+      const mora = +sanitizeNumber(ct.intereses_vencidos_acumulados || 0).toFixed(2);
       acc.principal += principalPend;
       acc.mora += mora;
       return acc;
@@ -665,8 +866,10 @@ const construirHTMLFicha = (credito) => {
     { principal: 0, mora: 0 }
   );
 
-  const tel = [cli.telefono, cli.telefono_secundario, cli.telefono_1, cli.telefono_2].filter(Boolean).join(' / ') || '-';
-  const dir = [cli.direccion, cli.direccion_secundaria, cli.direccion_1, cli.direccion_2].filter(Boolean).join(' | ') || '-';
+  const tel =
+    [cli.telefono, cli.telefono_secundario, cli.telefono_1, cli.telefono_2].filter(Boolean).join(' / ') || '-';
+  const dir =
+    [cli.direccion, cli.direccion_secundaria, cli.direccion_1, cli.direccion_2].filter(Boolean).join(' | ') || '-';
 
   const cobradorNombre =
     c?.cobradorCredito?.nombre_completo ||
@@ -766,34 +969,29 @@ const abrirVentanaImpresion = (html) => {
   w.onload = () => {
     try { w.focus(); } catch (_) {}
     try { w.print(); } catch (_) {}
-    setTimeout(() => { try { w.close(); } catch (_) {} }, 500);
+    setTimeout(() => {
+      try { w.close(); } catch (_) {}
+    }, 500);
   };
 };
 
-/**
- * Imprime la ficha del crédito desde el FRONT (HTML):
- * - Obtiene el crédito completo del backend
- * - Genera HTML y abre una ventana para imprimir/guardar a PDF
- */
 export const imprimirFichaDesdeFront = async (creditoId) => {
-  const resp = await obtenerCreditoPorId(creditoId);
+  const resp = await obtenerCreditoPorIdConResumenLibre(creditoId);
   const credito = unwrap(resp);
   if (!credito) throw new Error(`No se encontró el crédito #${creditoId}`);
+
   const html = construirHTMLFicha(credito);
   abrirVentanaImpresion(html);
 };
 
-// (opcional) exporto el constructor de HTML por si querés guardarlo como archivo luego
 export const construirFichaHTML = construirHTMLFicha;
 
 /* ───────────────── Descarga/Apertura de PDF desde el BACK ───────────────── */
 
-/**
- * Descarga el PDF generado por el backend: GET /creditos/:id/ficha.pdf
- */
 export const descargarFichaCreditoPDF = async (creditoId, filename) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
   const absoluteUrl = `${API_URL}${url}`;
+
   const res = await fetch(absoluteUrl, {
     method: 'GET',
     headers: {
@@ -801,10 +999,15 @@ export const descargarFichaCreditoPDF = async (creditoId, filename) => {
     },
     credentials: 'include'
   });
+
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`No se pudo descargar la ficha (HTTP ${res.status}). ${txt || ''}`);
+    const err = new Error(`No se pudo descargar la ficha (HTTP ${res.status}). ${txt || ''}`);
+    err.status = res.status;
+    err.data = { body: txt || null };
+    throw err;
   }
+
   const blob = await res.blob();
   const name = filename || `ficha-credito-${creditoId}.pdf`;
   const a = document.createElement('a');
@@ -817,12 +1020,10 @@ export const descargarFichaCreditoPDF = async (creditoId, filename) => {
   URL.revokeObjectURL(href);
 };
 
-/**
- * Abre el PDF del backend en una nueva pestaña (sin diálogo de descarga).
- */
 export const abrirFichaCreditoPDF = async (creditoId) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
   const absoluteUrl = `${API_URL}${url}`;
+
   const res = await fetch(absoluteUrl, {
     method: 'GET',
     headers: {
@@ -830,10 +1031,15 @@ export const abrirFichaCreditoPDF = async (creditoId) => {
     },
     credentials: 'include'
   });
+
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`No se pudo abrir la ficha (HTTP ${res.status}). ${txt || ''}`);
+    const err = new Error(`No se pudo abrir la ficha (HTTP ${res.status}). ${txt || ''}`);
+    err.status = res.status;
+    err.data = { body: txt || null };
+    throw err;
   }
+
   const blob = await res.blob();
   const blobUrl = URL.createObjectURL(blob);
   window.open(blobUrl, '_blank', 'noopener,noreferrer');

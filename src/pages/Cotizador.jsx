@@ -252,7 +252,7 @@ const Cotizador = () => {
             fecha_creacion: fechaCreacion.toISOString().split("T")[0],
             monto_financiado: parseFloat(monto),
             cantidad_cuotas: modalidad === "libre" ? 1 : parseInt(cuotas, 10),
-            interes: interesPct, // para estadísticas internas
+            interes: interesPct, // para estadísticas internas (NO se muestra)
             valor_por_cuota: cuotasDetalle[0]?.importe || 0,
             total_a_pagar: total,
             tipo_credito: modalidad === "libre" ? "mensual" : tipo,
@@ -320,9 +320,8 @@ const Cotizador = () => {
 
             // ✅ Aclara ciclos posibles (sin mostrar otros ciclos)
             doc.text(`Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)`, 14, y); y += 7;
-        } else if (interesPct) {
-            doc.text(`Interés total aplicado: ${interesPct.toFixed(2)}%`, 14, y); y += 7;
         }
+        // ❌ Eliminado: "Interés total aplicado" (no se muestra en PDF)
 
         doc.text(`Cantidad de ${modalidad === "libre" ? "ciclos" : "cuotas"}: ${modalidad === "libre" ? "1" : cuotas}`, 14, y); y += 7;
         doc.text(`Total a pagar: $${formatoMoneda(total)}`, 14, y); y += 7;
@@ -532,12 +531,7 @@ const Cotizador = () => {
                     <strong>Total a pagar:</strong> ${formatoMoneda(total)}
                 </p>
 
-                {modalidad !== "libre" && interesPct ? (
-                    <p className="flex items-center gap-2">
-                        <ListOrdered className="text-blue-600" size={18} />
-                        <strong>Interés total aplicado:</strong> {interesPct.toFixed(2)}%
-                    </p>
-                ) : null}
+                {/* ❌ Eliminado: "Interés total aplicado" (no se muestra en simulador) */}
 
                 <p className="flex items-center gap-2">
                     <ListOrdered className="text-blue-600" size={18} />
@@ -620,8 +614,8 @@ const Cotizador = () => {
                         const extraLibre =
                             modalidad === "libre"
                                 ? `\n- Mora diaria desde venc.: $${formatoMoneda(moraDiariaMonto)}` +
-                                  `\n- Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)` +
-                                  `\n\nℹ️ ${LEYENDA_LIBRE}`
+                                `\n- Ciclos posibles: hasta ${LIBRE_MAX_CICLOS} (se simula 1 ciclo)` +
+                                `\n\nℹ️ ${LEYENDA_LIBRE}`
                                 : "";
 
                         const resumen = `
@@ -632,10 +626,7 @@ const Cotizador = () => {
 - Plan de crédito: ${planLabel}
 - Periodicidad: ${capitalizarTipo(modalidad === "libre" ? "mensual" : tipo)}
 - Cantidad de ${modalidad === "libre" ? "ciclos" : "cuotas"}: ${modalidad === "libre" ? "1" : cuotas}
-- Total a pagar: $${formatoMoneda(total)}${modalidad !== "libre" && interesPct
-                                ? `\n- Interés total aplicado: ${interesPct.toFixed(2)}%`
-                                : ""
-                            }${extraLibre}
+- Total a pagar: $${formatoMoneda(total)}${extraLibre}
 
 🗓️ Detalle:
 ${resumenCuotas}

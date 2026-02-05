@@ -16,42 +16,62 @@ const Recibo = () => {
         return Number.isFinite(n) ? n : 0;
     };
 
+    // ✅ Parser robusto de montos (número o string con $ / miles / coma)
+    const moneyToNumber = (v) => {
+        if (v === null || v === undefined) return 0;
+
+        if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+
+        if (typeof v === 'string') {
+            const s0 = v.trim();
+            if (!s0) return 0;
+            if (s0.toLowerCase() === 'no aplica') return 0;
+
+            let s = s0.replace(/[^\d.,-]/g, '');
+
+            const hasDot = s.includes('.');
+            const hasComma = s.includes(',');
+
+            if (hasDot && hasComma) {
+                s = s.replace(/\./g, '').replace(',', '.');
+            } else if (hasComma && !hasDot) {
+                s = s.replace(',', '.');
+            }
+
+            const n = Number(s);
+            return Number.isFinite(n) ? n : 0;
+        }
+
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    };
+
     const fmt = (n) =>
         Number(n || 0).toLocaleString('es-AR', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
 
-    // 🔵 Renderiza monto o texto, robusto para strings numéricas o ya formateadas
     const renderMonto = (val) => {
         if (val === null || val === undefined) return '-';
 
-        // Si es string, contemplar casos: "No aplica", ya formateado con "$", o string numérico
         if (typeof val === 'string') {
             const s = val.trim();
 
-            // "No aplica" tal cual
             if (s.toLowerCase() === 'no aplica') return 'No aplica';
-
-            // Si ya viene con símbolo de moneda, respetamos (viene del back formateado)
             if (s.includes('$')) return s;
 
-            // Si es string numérica, la formateamos
-            const numeric = Number(s.replace(/[^\d.-]/g, ''));
+            const numeric = moneyToNumber(s);
             if (Number.isFinite(numeric)) return `$${fmt(numeric)}`;
 
-            // Otro texto, lo mostramos tal cual
             return s;
         }
 
-        // Si es número, formateamos normalmente
         return `$${fmt(val)}`;
     };
 
-    // Aplica "No aplica" a rubros seleccionados cuando el valor numérico es 0
     const noAplicaRule = (num) => (toNumber(num) === 0 ? 'No aplica' : `$${fmt(num)}`);
 
-    // Etiqueta visible de modalidad (solo display)
     const modalidadLabel = (mod = '') => {
         const m = String(mod || '').toLowerCase();
         if (m === 'comun') return 'Plan de Cuotas Fijas';
@@ -60,22 +80,21 @@ const Recibo = () => {
         return mod || '—';
     };
 
-    // Construye un objeto UI a partir del recibo crudo si el back no envió recibo_ui
     const buildFallbackUI = (r) => {
         if (!r) return null;
 
-        // Primero, si el back trae saldo_mora crudo, úsalo:
         const saldoMoraRaw =
             r.saldo_mora !== undefined && r.saldo_mora !== null ? r.saldo_mora : undefined;
 
-        // Si no hay crudo, calculamos con lo disponible:
         const moraPendAntes =
             toNumber(r.mora_pendiente_antes ?? r.mora_pendiente ?? r.mora_anterior ?? 0);
         const moraCobrada = toNumber(r.mora_cobrada ?? 0);
         const saldoMoraCalc = Math.max(moraPendAntes - moraCobrada, 0);
 
+        const pagoACuentaNum = moneyToNumber(r.pago_a_cuenta ?? r.monto_pagado);
+        const montoPagadoNum = moneyToNumber(r.monto_pagado);
+
         return {
-            // Cabecera
             numero_recibo: r.numero_recibo ?? null,
             fecha: r.fecha ?? '',
             hora: r.hora ?? '',
@@ -83,32 +102,26 @@ const Recibo = () => {
             cobrador: r.nombre_cobrador ?? '',
             medio_pago: r.medio_pago ?? '',
             concepto: r.concepto ?? '',
-            modalidad_credito: r.modalidad_credito, // si viene, lo mostramos
+            modalidad_credito: r.modalidad_credito,
 
-            // Montos principales
-            monto_pagado: `$${fmt(r.monto_pagado)}`,
-            pago_a_cuenta: `$${fmt(r.pago_a_cuenta ?? r.monto_pagado)}`,
+            monto_pagado: `$${fmt(montoPagadoNum)}`,
+            pago_a_cuenta: `$${fmt(pagoACuentaNum)}`,
 
-            // Saldos de cuota
             saldo_anterior: `$${fmt(r.saldo_cuota_anterior ?? r.saldo_anterior)}`,
             saldo_actual: `$${fmt(r.saldo_cuota_actual ?? r.saldo_actual)}`,
 
-            // Desglose
             importe_cuota_original: `$${fmt(r.importe_cuota_original ?? 0)}`,
             descuento_aplicado: noAplicaRule(r.descuento_aplicado ?? 0),
             mora_cobrada: noAplicaRule(r.mora_cobrada ?? 0),
 
-            // Saldo de mora: usa crudo si viene; si no, fallback calculado
             saldo_mora:
                 saldoMoraRaw !== undefined
                     ? (typeof saldoMoraRaw === 'string' ? saldoMoraRaw : `$${fmt(saldoMoraRaw)}`)
                     : noAplicaRule(saldoMoraCalc),
 
-            // Solo útiles en LIBRE (si existieran)
             principal_pagado: `$${fmt(r.principal_pagado ?? 0)}`,
             interes_ciclo_cobrado: noAplicaRule(r.interes_ciclo_cobrado ?? 0),
 
-            // Saldos del crédito (solo útiles en LIBRE)
             saldo_credito_anterior:
                 r.saldo_credito_anterior !== undefined ? `$${fmt(r.saldo_credito_anterior)}` : undefined,
             saldo_credito_actual:
@@ -119,7 +132,6 @@ const Recibo = () => {
     useEffect(() => {
         (async () => {
             try {
-                // Soportar apiFetch que devuelva {success, data} o data "plano"
                 const resp = await obtenerReciboPorId(id);
                 const payload =
                     resp && typeof resp === 'object' && 'data' in resp ? resp.data : resp;
@@ -132,22 +144,17 @@ const Recibo = () => {
         })();
     }, [id]);
 
-    // Preferimos el objeto de presentación del back si existe; si no, construimos uno equivalente.
-    // Además, si el back no incluyó saldo_mora, lo calculamos igual acá y lo agregamos.
     const ui = useMemo(() => {
         if (!recibo) return null;
         const base = recibo.recibo_ui || buildFallbackUI(recibo);
 
-        // Si el UI del back no trae saldo_mora:
         if (base && base.saldo_mora === undefined) {
-            // 1) Si viene crudo en el recibo (num o string), usamos eso
             if (recibo.saldo_mora !== undefined && recibo.saldo_mora !== null) {
                 base.saldo_mora =
                     typeof recibo.saldo_mora === 'string'
                         ? recibo.saldo_mora
                         : `$${fmt(recibo.saldo_mora)}`;
             } else {
-                // 2) Si no viene crudo, lo calculamos con los crudos disponibles
                 const moraPendAntes =
                     toNumber(
                         recibo.mora_pendiente_antes ??
@@ -164,30 +171,46 @@ const Recibo = () => {
         return base;
     }, [recibo]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // ✅ Hook SIEMPRE arriba (no después de returns)
+    const cantidadDe = useMemo(() => {
+        if (!ui && !recibo) return null;
+
+        const uiPago = ui?.pago_a_cuenta;
+        const uiMonto = ui?.monto_pagado;
+        const rPago = recibo?.pago_a_cuenta;
+        const rMonto = recibo?.monto_pagado;
+
+        const nPago = moneyToNumber(uiPago ?? rPago);
+        const nMonto = moneyToNumber(uiMonto ?? rMonto);
+
+        if (nPago > 0 && Math.abs(nPago - nMonto) > 0.009) return uiPago ?? rPago;
+
+        if (uiPago !== undefined && uiPago !== null) return uiPago;
+        if (rPago !== undefined && rPago !== null) return rPago;
+
+        return uiMonto ?? rMonto;
+    }, [ui, recibo]); // eslint-disable-line react-hooks/exhaustive-deps
+
     if (loading) return <p>Cargando recibo...</p>;
     if (error) return <p className="text-red-500">Error: {error}</p>;
     if (!recibo) return <p>No se encontró el recibo.</p>;
 
-    // ✅ Nueva ruta: prioriza InfoCredito (si tenemos credito_id) y si no, vuelve a ClienteDetalle
     const rutaCredito = recibo?.credito_id
         ? `/creditos/${recibo.credito_id}`
         : `/creditos/cliente/${recibo.cliente_id}`;
 
-    // ✅ Detección robusta de "libre":
     const modalidad = String(ui?.modalidad_credito || recibo?.modalidad_credito || '').toLowerCase();
     const conceptoStr = String(ui?.concepto || recibo?.concepto || '');
     const esLibre = modalidad === 'libre' || /LIBRE/i.test(conceptoStr);
 
     const modalidadVisible = ui?.modalidad_credito || recibo?.modalidad_credito || null;
 
-    // Para no-libre: importe cuota original, descuento, mora, saldo de mora
     const tieneDesgloseNoLibre =
         ui?.importe_cuota_original !== undefined ||
         ui?.descuento_aplicado !== undefined ||
         ui?.mora_cobrada !== undefined ||
         ui?.saldo_mora !== undefined;
 
-    // Para libre: además capital pagado e interés de ciclo
     const tieneDesgloseLibre =
         ui?.descuento_aplicado !== undefined ||
         ui?.mora_cobrada !== undefined ||
@@ -198,19 +221,16 @@ const Recibo = () => {
 
     const tieneDesglose = esLibre ? tieneDesgloseLibre : tieneDesgloseNoLibre;
 
-    // Saldos de capital del crédito (solo en LIBRE)
     const tieneSaldosCredito =
         esLibre &&
         (ui?.saldo_credito_anterior !== undefined || ui?.saldo_credito_actual !== undefined);
 
-    // Controla el logo si no carga
     const handleLogoError = (e) => {
         if (e?.currentTarget) e.currentTarget.style.display = 'none';
     };
 
     return (
         <section className="mx-auto max-w-2xl p-6 bg-white rounded shadow recibo-print print:shadow-none print:rounded-none">
-            {/* Estilos de impresión puntuales */}
             <style>{`
                 @media print {
                     .print\\:hidden { display: none !important; }
@@ -220,7 +240,6 @@ const Recibo = () => {
                 }
             `}</style>
 
-            {/* LOGO CENTRADO */}
             <div className="flex justify-center mb-4">
                 <img
                     src="/logosye.png"
@@ -235,7 +254,6 @@ const Recibo = () => {
                 Recibo #{ui?.numero_recibo ?? recibo?.numero_recibo}
             </h1>
 
-            {/* Modalidad (si existe) */}
             {modalidadVisible && (
                 <p className="text-center text-sm text-gray-600 mb-3">
                     Modalidad:{' '}
@@ -243,7 +261,6 @@ const Recibo = () => {
                 </p>
             )}
 
-            {/* Datos principales */}
             <div className="space-y-2 text-sm no-break">
                 <p>
                     <strong>Fecha:</strong> {ui?.fecha || recibo?.fecha || '-'}
@@ -256,14 +273,13 @@ const Recibo = () => {
                 </p>
                 <p>
                     <strong>Cantidad de:</strong>{' '}
-                    {renderMonto(ui?.monto_pagado ?? recibo?.monto_pagado)}
+                    {renderMonto(cantidadDe)}
                 </p>
                 <p>
                     <strong>En concepto de:</strong> {ui?.concepto || recibo?.concepto || '-'}
                 </p>
             </div>
 
-            {/* Saldos de la cuota — orden: Saldo anterior, Pago, Saldo total */}
             <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm no-break">
                 <div className="rounded border p-3 bg-gray-50">
                     <p className="text-gray-600 font-medium">
@@ -279,7 +295,7 @@ const Recibo = () => {
                 <div className="rounded border p-3 bg-gray-50">
                     <p className="text-gray-600 font-medium">Pago</p>
                     <p className="mt-1 font-semibold">
-                        {renderMonto(ui?.pago_a_cuenta ?? recibo?.pago_a_cuenta)}
+                        {renderMonto(ui?.pago_a_cuenta ?? recibo?.pago_a_cuenta ?? cantidadDe)}
                     </p>
                 </div>
                 <div className="rounded border p-3 bg-gray-50">
@@ -295,12 +311,10 @@ const Recibo = () => {
                 </div>
             </div>
 
-            {/* Desglose del pago */}
             {tieneDesglose && (
                 <div className="mt-6 no-break">
                     <h2 className="text-base font-semibold mb-2">Desglose del pago</h2>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                        {/* Importe cuota original (si vino del back) */}
                         {ui?.importe_cuota_original !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">Importe cuota original</p>
@@ -310,7 +324,6 @@ const Recibo = () => {
                             </div>
                         )}
 
-                        {/* Descuento */}
                         {ui?.descuento_aplicado !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">Descuento aplicado</p>
@@ -320,7 +333,6 @@ const Recibo = () => {
                             </div>
                         )}
 
-                        {/* Mora cobrada */}
                         {ui?.mora_cobrada !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">Mora cobrada</p>
@@ -330,7 +342,6 @@ const Recibo = () => {
                             </div>
                         )}
 
-                        {/* Saldo de mora (restante) */}
                         {ui?.saldo_mora !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">Saldo de mora</p>
@@ -340,7 +351,6 @@ const Recibo = () => {
                             </div>
                         )}
 
-                        {/* LIBRE: Capital pagado */}
                         {esLibre && ui?.principal_pagado !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">Capital pagado</p>
@@ -350,7 +360,6 @@ const Recibo = () => {
                             </div>
                         )}
 
-                        {/* LIBRE: Interés de ciclo */}
                         {esLibre && ui?.interes_ciclo_cobrado !== undefined && (
                             <div className="rounded border p-3 bg-white">
                                 <p className="text-gray-600">
@@ -365,7 +374,6 @@ const Recibo = () => {
                 </div>
             )}
 
-            {/* Capital del crédito — SOLO LIBRE */}
             {tieneSaldosCredito && (
                 <div className="mt-6 no-break">
                     <h2 className="text-base font-semibold mb-2">Capital del crédito</h2>
@@ -390,7 +398,6 @@ const Recibo = () => {
                 </div>
             )}
 
-            {/* Cobrador / Medio de pago */}
             <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm no-break">
                 <div className="rounded border p-3 bg-gray-50">
                     <p className="text-gray-600">Cobrador</p>
@@ -406,7 +413,6 @@ const Recibo = () => {
                 </div>
             </div>
 
-            {/* Acciones */}
             <button
                 onClick={() => window.print()}
                 className="mt-6 px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 print:hidden"

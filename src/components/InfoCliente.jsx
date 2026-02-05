@@ -1,5 +1,5 @@
 // src/components/InfoCliente.jsx
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import {
     User,
     CreditCard,
@@ -9,14 +9,11 @@ import {
     BadgeDollarSign,
     StickyNote,
     LocateIcon,
-    Image as ImageIcon,
     ShieldCheck,
     Star
 } from "lucide-react";
-import ImagenModal from "./ImagenModal";
 
 const InfoCliente = ({ cliente }) => {
-    const [modalAbierto, setModalAbierto] = useState(false);
     if (!cliente) return null;
 
     // Helper para mostrar dato textual
@@ -159,20 +156,6 @@ const InfoCliente = ({ cliente }) => {
                     <span className="truncate text-gray-800">{dato(cobradorNombre)}</span>
                 </li>
 
-                {cliente.dni_foto && (
-                    <li className="order-11 flex items-center justify-start gap-2">
-                        <ImageIcon size={16} className="text-gray-500" />
-                        <span className="font-medium text-gray-600">DNI:</span>
-                        <button
-                            type="button"
-                            onClick={() => setModalAbierto(true)}
-                            className="ml-2 rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700"
-                        >
-                            Ver foto
-                        </button>
-                    </li>
-                )}
-
                 <li className="order-12 flex items-start gap-2 sm:col-span-2 lg:col-span-3">
                     <StickyNote size={16} className="mt-0.5 text-gray-500" />
                     <div>
@@ -181,12 +164,6 @@ const InfoCliente = ({ cliente }) => {
                     </div>
                 </li>
             </ul>
-
-            <ImagenModal
-                url={cliente.dni_foto}
-                visible={modalAbierto}
-                onClose={() => setModalAbierto(false)}
-            />
         </section>
     );
 };

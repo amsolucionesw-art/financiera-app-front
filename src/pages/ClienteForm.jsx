@@ -9,7 +9,6 @@ import {
   crearCliente,
   obtenerClientePorId,
   actualizarCliente,
-  subirDniFoto,
 } from "../services/clienteService";
 import { obtenerCobradoresConZonas } from "../services/usuarioService";
 import { getRolId } from "../services/authService";
@@ -29,8 +28,6 @@ const ClienteForm = () => {
 
   const [cobradores, setCobradores] = useState([]);
   const [zonasDisponibles, setZonasDisponibles] = useState([]);
-  const [dniFoto, setDniFoto] = useState(null);
-  const [dniFotoUrl, setDniFotoUrl] = useState(null);
 
   // ✅ Rol del usuario logueado (centralizado)
   const [rolId, setRolId] = useState(null);
@@ -44,7 +41,7 @@ const ClienteForm = () => {
   const esSuperadmin = Number(rolId) === 0;
   const esAdmin = Number(rolId) === 1;
 
-  // ✅ Regla: Admin puede editar cliente, pero NO puede editar DNI (solo en edición)
+  // ✅ Regla: Admin puede editar cliente, pero NO puede editar DNI (número) (solo en edición)
   const bloquearEdicionDni = esEdicion && esAdmin;
 
   useEffect(() => {
@@ -67,7 +64,6 @@ const ClienteForm = () => {
       try {
         const cliente = await obtenerClientePorId(id);
         Object.entries(cliente).forEach(([k, v]) => setValue(k, v ?? ""));
-        setDniFotoUrl(cliente.dni_foto || null);
 
         const idCobrador = parseInt(cliente.cobrador);
         const cobradorEncontrado = cobradores.find((c) => c.id === idCobrador);
@@ -91,14 +87,13 @@ const ClienteForm = () => {
 
   const onSubmit = async (data) => {
     try {
-      let clienteId = id;
-      let nuevaFotoUrl = dniFotoUrl;
+      // ✅ Normalización: email opcional (si viene vacío, lo mandamos como null)
+      if (Object.prototype.hasOwnProperty.call(data, "email")) {
+        const e = (data.email ?? "").toString().trim();
+        data.email = e ? e : null;
+      }
 
       if (esEdicion) {
-        if (!data.dni_foto && dniFotoUrl) {
-          data.dni_foto = dniFotoUrl.split("/").pop();
-        }
-
         // ✅ Hardening UX: si admin edita, forzamos a no mandar "dni" aunque esté deshabilitado (por si algún browser/autofill)
         if (bloquearEdicionDni) {
           const { dni, ...rest } = data;
@@ -107,23 +102,7 @@ const ClienteForm = () => {
 
         await actualizarCliente(id, data);
       } else {
-        const res = await crearCliente(data);
-        clienteId = res.id;
-      }
-
-      // ✅ Subida de foto DNI: solo superadmin (el backend ya lo bloquea, acá mejoramos UX)
-      if (dniFoto && clienteId) {
-        if (!esSuperadmin) {
-          Swal.fire(
-            "Sin permisos",
-            "Solo el superadmin puede actualizar la foto del DNI.",
-            "warning"
-          );
-        } else {
-          const uploadRes = await subirDniFoto(clienteId, dniFoto);
-          nuevaFotoUrl = uploadRes?.url ?? dniFotoUrl;
-          setDniFotoUrl(nuevaFotoUrl);
-        }
+        await crearCliente(data);
       }
 
       Swal.fire(
@@ -134,7 +113,11 @@ const ClienteForm = () => {
       navigate("/clientes");
     } catch (error) {
       console.error("Error al guardar cliente:", error);
-      Swal.fire("Error", error?.message || "No se pudo guardar el cliente", "error");
+      Swal.fire(
+        "Error",
+        error?.message || "No se pudo guardar el cliente",
+        "error"
+      );
     }
   };
 
@@ -174,7 +157,12 @@ const ClienteForm = () => {
             .replace("_", " ")
             .replace(/\b\w/g, (l) => l.toUpperCase());
 
-          const type = name.includes("fecha") ? "date" : "text";
+          const type =
+            name === "email"
+              ? "email"
+              : name.includes("fecha")
+              ? "date"
+              : "text";
 
           const baseRequired = [
             "nombre",
@@ -279,61 +267,6 @@ const ClienteForm = () => {
             <p className="text-xs text-red-500">{errors.zona.message}</p>
           )}
         </div>
-
-        {dniFotoUrl && (
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1">Foto actual del DNI:</label>
-            <img
-              src={dniFotoUrl}
-              alt="DNI"
-              className="max-w-xs rounded-md border border-gray-200"
-            />
-          </div>
-        )}
-
-        {/* ✅ Solo superadmin puede subir nueva foto del DNI */}
-        {esSuperadmin && (
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1">Subir nueva foto del DNI</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-
-                const validTypes = [
-                  "image/jpeg",
-                  "image/png",
-                  "image/jpg",
-                  "image/webp",
-                ];
-                const maxSize = 2 * 1024 * 1024;
-
-                if (!validTypes.includes(file.type)) {
-                  Swal.fire(
-                    "Formato inválido",
-                    "Solo se permiten imágenes JPG, PNG o WEBP",
-                    "error"
-                  );
-                  return;
-                }
-
-                if (file.size > maxSize) {
-                  Swal.fire(
-                    "Archivo demasiado grande",
-                    "La imagen no puede superar los 2MB",
-                    "error"
-                  );
-                  return;
-                }
-
-                setDniFoto(file);
-              }}
-              className="text-sm"
-            />
-          </div>
-        )}
 
         <div className="md:col-span-2 flex justify-end gap-3 pt-4">
           <button

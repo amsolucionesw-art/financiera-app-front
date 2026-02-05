@@ -9,9 +9,11 @@ import { getToken } from './authService';
  *
  * Solución:
  * - Para requests JSON normales: usamos apiFetch (ya resuelve base + /api + headers).
- * - Para uploads (FormData): usamos apiFetch también (soporta FormData y no fuerza Content-Type).
  * - Para descargas/importación (fetch directo): construimos API_URL_BASE con la MISMA lógica que apiClient.
- * - Para URLs públicas (uploads): derivamos ORIGIN (sin /api) de VITE_API_BASE / VITE_API_URL / window.origin.
+ *
+ * Nota:
+ * - Se removió la lógica de DNI (subida/visualización) por decisión de producto:
+ *   no se muestra ni se utiliza por ahora, pero queda listo para reactivar en el futuro.
  */
 
 /* ───────────────── Helpers: API base consistente con apiClient ───────────────── */
@@ -39,42 +41,11 @@ const apiUrl = (path) => {
     return `${API_URL_BASE}${normPath}`.replace(/\/{2,}/g, '/').replace(':/', '://');
 };
 
-/** Origin “público” para assets (SIN /api) */
-const resolvePublicOrigin = () => {
-    // 1) Si hay VITE_API_BASE, es lo más claro (http://host:port)
-    if (API_BASE_ENV) return normalizeBase(API_BASE_ENV);
-
-    // 2) Si VITE_API_URL es absoluto, le sacamos el origin
-    if (/^https?:\/\//i.test(RAW_API_URL)) {
-        try {
-            return new URL(RAW_API_URL).origin;
-        } catch {
-            // ignore
-        }
-    }
-
-    // 3) Same-origin (producción típica con reverse proxy)
-    if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
-
-    // 4) Fallback
-    return 'http://localhost:3000';
-};
-
-const PUBLIC_ORIGIN = resolvePublicOrigin();
-
 /* Header SOLO con Authorization (sin Content-Type) */
 const getAuthHeaderOnly = () => {
     const raw = getToken() || '';
     const token = raw?.replace(/^Bearer\s+/i, '') || raw;
     return token ? { Authorization: `Bearer ${token}` } : {};
-};
-
-/* Si viene una ruta relativa (p. ej. "/uploads/dni/123.jpg"), la paso a absoluta */
-const toAbsoluteUrl = (maybePath) => {
-    if (!maybePath || typeof maybePath !== 'string') return maybePath;
-    if (/^(https?:)?\/\//i.test(maybePath)) return maybePath; // ya es absoluta
-    if (/^(data:|blob:)/i.test(maybePath)) return maybePath;  // data/blob
-    return `${PUBLIC_ORIGIN}${maybePath.startsWith('/') ? '' : '/'}${maybePath}`;
 };
 
 /* Helper: objeto -> querystring */
@@ -93,46 +64,34 @@ const toQueryString = (params = {}) => {
 
 /** Obtener todos los clientes (listado completo) */
 export const obtenerClientes = async () => {
-    const resp = await apiFetch('/clientes');
-    return Array.isArray(resp)
-        ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
-        : resp;
+    return await apiFetch('/clientes');
 };
 
 /** Obtener clientes básico (id, nombre, apellido, cobrador, zona). Acepta filtros, ej: { cobrador: 2, zona: 5 } */
 export const obtenerClientesBasico = async (filtros = {}) => {
     const qs = toQueryString(filtros);
-    const resp = await apiFetch(`/clientes/basico${qs}`);
-    return Array.isArray(resp)
-        ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
-        : resp;
+    return await apiFetch(`/clientes/basico${qs}`);
 };
 
 /** Obtener cliente por ID */
 export const obtenerClientePorId = async (id) => {
-    const data = await apiFetch(`/clientes/${id}`);
-    if (data && data.dni_foto) data.dni_foto = toAbsoluteUrl(data.dni_foto);
-    return data;
+    return await apiFetch(`/clientes/${id}`);
 };
 
 /** Crear cliente */
 export const crearCliente = async (cliente) => {
-    const created = await apiFetch('/clientes', {
+    return await apiFetch('/clientes', {
         method: 'POST',
         body: cliente,
     });
-    if (created && created.dni_foto) created.dni_foto = toAbsoluteUrl(created.dni_foto);
-    return created;
 };
 
 /** Actualizar cliente */
 export const actualizarCliente = async (id, cliente) => {
-    const updated = await apiFetch(`/clientes/${id}`, {
+    return await apiFetch(`/clientes/${id}`, {
         method: 'PUT',
         body: cliente,
     });
-    if (updated && updated.dni_foto) updated.dni_foto = toAbsoluteUrl(updated.dni_foto);
-    return updated;
 };
 
 /**
@@ -157,36 +116,9 @@ export const eliminarCliente = async (id) => {
     }
 };
 
-/**
- * Subir imagen del DNI (FormData).
- * ✅ Ahora usa apiFetch para no duplicar lógica de base URL / headers.
- * IMPORTANTE: no mandar Content-Type manualmente (apiFetch lo gestiona).
- */
-export const subirDniFoto = async (clienteId, file) => {
-    const formData = new FormData();
-    formData.append('imagen', file);
-
-    const payload = await apiFetch(`/clientes/${clienteId}/dni-foto`, {
-        method: 'POST',
-        body: formData, // apiFetch detecta FormData y no fuerza Content-Type
-        fullResponse: true, // por si el backend responde { success, message, url }
-    });
-
-    // Normalizamos respuesta: puede venir { url } o { data: { url } }
-    const data = payload && Object.prototype.hasOwnProperty.call(payload, 'data') ? payload.data : payload;
-
-    if (data?.dni_foto) data.dni_foto = toAbsoluteUrl(data.dni_foto);
-    if (data?.url) data.url = toAbsoluteUrl(data.url);
-
-    return data;
-};
-
 /** Obtener clientes por cobrador (incluye créditos/cuotas según tu back) */
 export const obtenerClientesPorCobrador = async (cobradorId) => {
-    const resp = await apiFetch(`/clientes/por-cobrador/${cobradorId}`);
-    return Array.isArray(resp)
-        ? resp.map((c) => (c?.dni_foto ? { ...c, dni_foto: toAbsoluteUrl(c.dni_foto) } : c))
-        : resp;
+    return await apiFetch(`/clientes/por-cobrador/${cobradorId}`);
 };
 
 /* ─────────── Importación por planilla (CSV/XLSX) ─────────── */

@@ -1,6 +1,6 @@
 // src/services/cuotaService.js
 
-import apiFetch from './apiClient';
+import apiFetch from './apiClient.js';
 
 /* ───────────────── Config & helpers de ruta ───────────────── */
 
@@ -28,6 +28,48 @@ const unwrapSoft = (resp) => {
     if (!resp) return resp;
     if (resp?.data !== undefined && (resp?.success === true || resp?.success === false)) return resp.data;
     return resp;
+};
+
+/* ───────────────── Normalización de errores (CRÍTICO para UI) ───────────────── */
+/**
+ * Objetivo:
+ * - preservar status + message que vienen del backend
+ * - soportar distintas formas (fetch, axios-like, throws "Error" simple)
+ * - devolver SIEMPRE un Error con props {status, data} para que el front pueda leerlo
+ */
+const normalizeApiError = (e, fallbackMessage = 'Error de red o servidor.') => {
+    const status =
+        e?.status ??
+        e?.response?.status ??
+        e?.response?.data?.status ??
+        e?.data?.status ??
+        null;
+
+    const data = e?.response?.data ?? e?.data ?? null;
+
+    const message =
+        data?.message ??
+        data?.error ??
+        e?.message ??
+        fallbackMessage;
+
+    const err = new Error(message || fallbackMessage);
+    if (status !== null && status !== undefined) err.status = status;
+    if (data !== null && data !== undefined) err.data = data;
+
+    // útil para logs si quieren
+    if (e?.stack) err.stack = e.stack;
+
+    return err;
+};
+
+// Wrapper para calls a apiFetch donde queremos errores “limpios” hacia la UI
+const apiFetchSafe = async (url, options, fallbackMessage) => {
+    try {
+        return await apiFetch(url, options);
+    } catch (e) {
+        throw normalizeApiError(e, fallbackMessage);
+    }
 };
 
 /* ───────────────── Helpers numéricos ───────────────── */
@@ -166,6 +208,9 @@ export const obtenerPagosPorCuota = async (cuotaId) =>
 
 /**
  * Registrar un abono parcial
+ *
+ * ✅ BACK REAL: POST /pagos
+ * (Tu backend expone pagos en /api/pagos y /api/pagos/total)
  */
 export const registrarPagoParcial = ({
     cuota_id,
@@ -173,55 +218,97 @@ export const registrarPagoParcial = ({
     forma_pago_id,
     observacion,
     descuento = 0,
-    modo,
+
+    // compat / backend nuevo
+    descuento_scope = null, // 'mora' | 'total'
+    descuento_mora = null,  // puede ser % (LIBRE) o monto (NO-LIBRE)
+    modo, // legacy si lo usaban
 }) =>
-    apiFetch(BASE_PAGOS, {
-        method: 'POST',
-        body: {
-            cuota_id,
-            monto_pagado: sanitizeNumber(monto_pagado),
-            forma_pago_id,
-            observacion,
-            descuento: sanitizeNumber(descuento),
-            ...(modo ? { modo } : {}),
+    apiFetchSafe(
+        BASE_PAGOS,
+        {
+            method: 'POST',
+            body: {
+                cuota_id,
+                monto_pagado: sanitizeNumber(monto_pagado),
+                forma_pago_id,
+                observacion,
+                descuento: sanitizeNumber(descuento),
+
+                ...(descuento_scope != null ? { descuento_scope: String(descuento_scope).toLowerCase() } : {}),
+                ...(descuento_mora != null ? { descuento_mora: sanitizeNumber(descuento_mora) } : {}),
+
+                ...(modo ? { modo } : {}),
+            },
         },
-    });
+        'No se pudo registrar el abono parcial.'
+    );
 
 /**
- * PAGO TOTAL / LIQUIDACIÓN de cuota
- * Backend: POST /pagos/total
+ * PAGO TOTAL / LIQUIDACIÓN
  *
- * Nota: agrego campos compat opcionales por si el backend ya contempla variantes.
+ * ✅ BACK REAL: POST /pagos/total
+ *
+ * Campos compat:
+ * - descuento_scope / descuento_mora (LIBRE)
+ * - ciclo_libre (LIBRE: pagar ciclo viejo explícito)
+ * - monto_pagado (LIBRE: permitir pagar un monto específico en "total")
+ * - descuento_sobre / descuento_porcentaje (otros flujos legacy, si existieran)
  */
-export const registrarPagoTotal = ({
+export const registrarPagoTotal = async ({
     cuota_id,
     forma_pago_id,
     observacion,
     descuento = 0,
 
-    // compat opcionales (si el backend los ignora, no pasa nada)
+    // LIBRE (backend nuevo)
+    descuento_scope = null, // 'mora' | 'total'
+    descuento_mora = null,  // % sobre mora (LIBRE)
+    ciclo_libre = null,
+    monto_pagado = null,
+
+    // compat legacy / otros flujos
     descuento_sobre, // 'mora' | 'total' | etc.
     descuento_porcentaje,
-}) =>
-    apiFetch(joinPath(BASE_PAGOS, 'total'), {
-        method: 'POST',
-        body: {
-            cuota_id,
-            forma_pago_id,
-            observacion,
-            descuento: sanitizeNumber(descuento),
-            ...(descuento_sobre ? { descuento_sobre: String(descuento_sobre).toLowerCase() } : {}),
-            ...(descuento_porcentaje !== undefined && descuento_porcentaje !== null
-                ? { descuento_porcentaje: sanitizeNumber(descuento_porcentaje) }
-                : {}),
+}) => {
+    const body = {
+        cuota_id,
+        forma_pago_id,
+        observacion,
+
+        // mantenemos por compat (backend lo resuelve por modalidad)
+        descuento: sanitizeNumber(descuento),
+
+        ...(descuento_scope != null ? { descuento_scope: String(descuento_scope).toLowerCase() } : {}),
+        ...(descuento_mora != null ? { descuento_mora: sanitizeNumber(descuento_mora) } : {}),
+
+        ...(ciclo_libre != null ? { ciclo_libre: sanitizeNumber(ciclo_libre) } : {}),
+        ...(monto_pagado != null ? { monto_pagado: sanitizeNumber(monto_pagado) } : {}),
+
+        ...(descuento_sobre ? { descuento_sobre: String(descuento_sobre).toLowerCase() } : {}),
+        ...(descuento_porcentaje !== undefined && descuento_porcentaje !== null
+            ? { descuento_porcentaje: sanitizeNumber(descuento_porcentaje) }
+            : {}),
+    };
+
+    return await apiFetchSafe(
+        joinPath(BASE_PAGOS, 'total'),
+        {
+            method: 'POST',
+            body,
         },
-    });
+        'No se pudo registrar el pago total.'
+    );
+};
 
 /**
- * Compatibilidad: pagar cuota completa (redirige a /pagos/total)
+ * Compatibilidad: pagar cuota completa
  * Acepta:
  * - cuotaId o cuota_id
  * - forma_pago_id o formaId
+ *
+ * + Props extra para LIBRE:
+ * - descuento_scope / descuento_mora / ciclo_libre / monto_pagado
  */
 export const pagarCuota = ({
     cuotaId,
@@ -231,7 +318,13 @@ export const pagarCuota = ({
     observacion,
     descuento = 0,
 
-    // compat opcionales
+    // LIBRE (nuevo)
+    descuento_scope = null,
+    descuento_mora = null,
+    ciclo_libre = null,
+    monto_pagado = null,
+
+    // legacy
     descuento_sobre,
     descuento_porcentaje,
 }) =>
@@ -240,6 +333,12 @@ export const pagarCuota = ({
         forma_pago_id: forma_pago_id ?? formaId,
         observacion,
         descuento,
+
+        descuento_scope,
+        descuento_mora,
+        ciclo_libre,
+        monto_pagado,
+
         descuento_sobre,
         descuento_porcentaje,
     });

@@ -121,10 +121,13 @@ const CreditForm = ({
 
         if (isLibre) {
             const interesPct = 60; // fijo
-            const totalCiclo = capital * (1 + interesPct / 100);
+            const interesMonto = capital * (interesPct / 100);
+            const totalCiclo = capital + interesMonto;
             return {
                 interesPct,
                 capital,
+                interesMonto,
+                descuentoInteresMonto: 0,
                 totalSinDesc: totalCiclo,
                 descPct: 0,
                 totalConDesc: totalCiclo,
@@ -134,15 +137,26 @@ const CreditForm = ({
 
         // Plan de Cuotas Fijas / Progresivo
         const interesPct = interesProporcionalMin60(tipo_credito, cantidad_cuotas);
-        const totalSinDesc = capital * (1 + interesPct / 100);
+
+        // ✅ Separar interés en monto para aplicar descuento SOLO sobre interés
+        const interesMonto = capital * (interesPct / 100);
+        const totalSinDesc = capital + interesMonto;
+
         const descPct = esSuperAdmin ? clamp(descuento, 0, 100) : 0;
-        const totalConDesc = totalSinDesc * (1 - descPct / 100);
+
+        const descuentoInteresMonto = descPct > 0 ? (interesMonto * (descPct / 100)) : 0;
+        const interesNeto = Math.max(interesMonto - descuentoInteresMonto, 0);
+
+        const totalConDesc = capital + interesNeto;
+
         const cuotasN = Number(cantidad_cuotas) || 0;
         const valorCuotaProm = cuotasN > 0 ? totalConDesc / cuotasN : 0;
 
         return {
             interesPct,
             capital,
+            interesMonto,
+            descuentoInteresMonto,
             totalSinDesc,
             descPct,
             totalConDesc,
@@ -172,6 +186,7 @@ const CreditForm = ({
                     cantidad_cuotas: isLibre ? 1 : (Number(vals.cantidad_cuotas) || 0),
                     tipo_credito: isLibre ? 'mensual' : vals.tipo_credito,
                     interes: interesOut,
+                    // ✅ El backend ya interpreta este % como descuento SOLO sobre interés
                     descuento: !isLibre && esSuperAdmin ? clamp(vals.descuento, 0, 100) : 0
                 };
                 onSubmit(payload);
@@ -306,7 +321,7 @@ const CreditForm = ({
             {/* Descuento (%) – solo superadmin y NO en "libre" */}
             {esSuperAdmin && !isLibre && (
                 <div>
-                    <label className="mb-1 block text-sm">Descuento (%)</label>
+                    <label className="mb-1 block text-sm">Descuento sobre interés (%)</label>
                     <div className="relative">
                         <input
                             type="number"
@@ -343,7 +358,7 @@ const CreditForm = ({
 
             {/* Fecha compromiso de pago */}
             <div>
-                <label className="mb-1 block text-sm">Fecha compromiso de pago</label>
+                <label className="mb-1 block text-sm">Fecha primer vencimiento:</label>
                 <input
                     type="date"
                     {...register('fecha_compromiso_pago', { required: 'Requerido' })}
@@ -389,11 +404,22 @@ const CreditForm = ({
                             {isLibre
                                 ? 'Total inicial del crédito (Libre):'
                                 : derived.descPct
-                                    ? `Total a devolver (con desc. ${derived.descPct}%):`
+                                    ? `Total a devolver (con desc. sobre interés ${derived.descPct}%):`
                                     : 'Total a devolver (final):'}
                         </span>
                         <div className="font-semibold">${fmtMoneyAR(derived.totalConDesc)}</div>
                     </div>
+
+                    {/* ✅ Detalle del descuento aplicado (solo si hay descuento) */}
+                    {!isLibre && derived.descPct > 0 && (
+                        <div className="sm:col-span-3">
+                            <span className="text-gray-500">Descuento aplicado al interés:</span>{' '}
+                            <span className="font-medium">${fmtMoneyAR(derived.descuentoInteresMonto)}</span>
+                            <span className="text-gray-500">
+                                {' '} (el capital no se descuenta)
+                            </span>
+                        </div>
+                    )}
 
                     {!isLibre && (
                         <div className="sm:col-span-3">

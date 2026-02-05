@@ -69,7 +69,7 @@ const Login = () => {
                         placeholder="Usuario"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
-                        className="w-full border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                        className="w-full border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
                         autoFocus
                     />
 
@@ -79,7 +79,7 @@ const Login = () => {
                             placeholder="Contraseña"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            className="w-full border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500 pr-10"
+                            className="w-full border rounded px-4 py-2 focus:outline-none focus:ring-2 focus:ring-sky-500 pr-10 bg-white"
                         />
                         <button
                             type="button"
