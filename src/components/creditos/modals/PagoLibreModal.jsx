@@ -262,6 +262,25 @@ const PagoLibreModal = ({
         return msg || "No se pudo registrar el pago.";
     };
 
+    const swalError = async (e, fallback = "No se pudo registrar el pago.") => {
+        const msg = normalizarErrorPago(e) || fallback;
+        await Swal.fire({
+            title: "Error",
+            text: msg,
+            icon: "error",
+            confirmButtonText: "Cerrar"
+        });
+    };
+
+    const swalWarn = async (title, text) => {
+        await Swal.fire({
+            title,
+            text,
+            icon: "warning",
+            confirmButtonText: "Entendido"
+        });
+    };
+
     // ✅ Refresco forzado del resumen LIBRE (anti “estado viejo” en 2do pago)
     const refreshResumenForce = async () => {
         const creditoId = credito?.id;
@@ -324,16 +343,21 @@ const PagoLibreModal = ({
         if (bloqueadoPorEstado) {
             const msg = motivoBloqueo || "Operación no permitida por estado del crédito.";
             setError(msg);
-            await Swal.fire({
-                title: "Acción no disponible",
-                text: msg,
-                icon: "warning"
-            });
+            await swalWarn("Acción no disponible", msg);
             return;
         }
 
-        if (!cuotaLibreId || !formaPagoId) {
-            setError("Seleccioná una forma de pago.");
+        if (!cuotaLibreId) {
+            const msg = "No se pudo determinar la cuota LIBRE para registrar el pago. Refresque e intente nuevamente.";
+            setError(msg);
+            await Swal.fire({ title: "No se encontró la cuota", text: msg, icon: "error" });
+            return;
+        }
+
+        if (!formaPagoId) {
+            const msg = "Seleccioná una forma de pago.";
+            setError(msg);
+            await swalWarn("Falta información", msg);
             return;
         }
 
@@ -386,30 +410,32 @@ const PagoLibreModal = ({
             );
 
             let resp = null;
-            let resumenAccion = "";
 
             if (modo === "parcial") {
                 if (parcialBloqueado) {
-                    setError("En el 3er mes del crédito LIBRE no se permite abono parcial. Debe realizar pago total.");
-                    setSaving(false);
+                    const msg = "En el 3er mes del crédito LIBRE no se permite abono parcial. Debe realizar pago total.";
+                    setError(msg);
+                    await swalWarn("Abono parcial no disponible", msg);
                     return;
                 }
 
                 const montoNum = Number(String(monto).replace(",", ".")) || 0;
                 if (montoNum <= 0) {
-                    setError("Ingresá un monto válido.");
-                    setSaving(false);
+                    const msg = "Ingresá un monto válido.";
+                    setError(msg);
+                    await swalWarn("Monto inválido", msg);
                     return;
                 }
 
-                resumenAccion = `Abono parcial de $${money(montoNum)} sobre el crédito LIBRE #${credito?.id}.\n`;
+                const formaNombre =
+                    (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
 
                 const result = await Swal.fire({
                     title: "Confirmar pago",
-                    html: `<p style="margin-bottom:6px;">${resumenAccion}</p>
-                          <p style="font-size:12px;color:#555;">Forma de pago: ${
-                              (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || ""
-                          }</p>`,
+                    html: `<p style="margin-bottom:6px;">Abono parcial de <b>$${money(
+                        montoNum
+                    )}</b> sobre el crédito LIBRE <b>#${credito?.id}</b>.</p>
+                          <p style="font-size:12px;color:#555;">Forma de pago: ${formaNombre}</p>`,
                     icon: "question",
                     showCancelButton: true,
                     confirmButtonText: "Sí, confirmar",
@@ -417,10 +443,7 @@ const PagoLibreModal = ({
                     reverseButtons: true
                 });
 
-                if (!result.isConfirmed) {
-                    setSaving(false);
-                    return;
-                }
+                if (!result.isConfirmed) return;
 
                 // ✅ Compat: mandamos monto_pagado + monto por si el back espera alias
                 resp = await registrarPagoParcial({
@@ -439,15 +462,17 @@ const PagoLibreModal = ({
                 const desc = puedeDescontar ? descBase : 0;
 
                 if (puedeDescontar && (desc < 0 || desc > 100)) {
-                    setError("El descuento debe ser un porcentaje entre 0 y 100.");
-                    setSaving(false);
+                    const msg = "El descuento debe ser un porcentaje entre 0 y 100.";
+                    setError(msg);
+                    await swalWarn("Descuento inválido", msg);
                     return;
                 }
 
                 // ✅ Validación sobre MORA TOTAL
                 if (puedeDescontar && morTotal <= 0 && desc > 0) {
-                    setError("No hay mora generada para aplicar descuento.");
-                    setSaving(false);
+                    const msg = "No hay mora generada para aplicar descuento.";
+                    setError(msg);
+                    await swalWarn("Descuento no aplicable", msg);
                     return;
                 }
 
@@ -455,29 +480,24 @@ const PagoLibreModal = ({
                 const totalConDesc = Math.max(0, totalLiq - descuentoPesos);
 
                 if (!(totalConDesc > 0)) {
-                    setError("El total a pagar es inválido.");
-                    setSaving(false);
+                    const msg = "El total a pagar es inválido.";
+                    setError(msg);
+                    await swalWarn("Total inválido", msg);
                     return;
                 }
 
-                resumenAccion = `Liquidación total del crédito LIBRE #${credito?.id}.\n
-Capital (hoy): $${money(cap)}
-Interés de ciclo (hoy): $${money(intHoy)}
-Mora (hoy): $${money(morHoy)}
-
-Interés total pendiente: $${money(intTotal)}
-Mora total pendiente: $${money(morTotal)}
-Total liquidación (hoy): $${money(totalLiq)}
-
-Descuento sobre mora total: ${desc}% ($${money(descuentoPesos)})
-Total a pagar con descuento: $${money(totalConDesc)}.`;
+                const formaNombre =
+                    (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
 
                 const result = await Swal.fire({
                     title: "Confirmar liquidación",
-                    html: `<p style="white-space:pre-line;font-size:13px;text-align:left;">${resumenAccion}</p>
-                           <p style="font-size:12px;color:#555;margin-top:6px;">Forma de pago: ${
-                               (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || ""
-                           }</p>`,
+                    html: `<div style="font-size:13px;text-align:left;line-height:1.35;">
+                            <div>Crédito LIBRE <b>#${credito?.id}</b></div>
+                            <div style="margin-top:6px;">Total liquidación (hoy): <b>$${money(totalLiq)}</b></div>
+                            <div>Descuento sobre mora total: <b>${desc}%</b> ($${money(descuentoPesos)})</div>
+                            <div style="margin-top:6px;">Total a pagar: <b>$${money(totalConDesc)}</b></div>
+                            <div style="margin-top:10px;font-size:12px;color:#555;">Forma de pago: ${formaNombre}</div>
+                           </div>`,
                     icon: "question",
                     showCancelButton: true,
                     confirmButtonText: "Sí, confirmar",
@@ -485,10 +505,7 @@ Total a pagar con descuento: $${money(totalConDesc)}.`;
                     reverseButtons: true
                 });
 
-                if (!result.isConfirmed) {
-                    setSaving(false);
-                    return;
-                }
+                if (!result.isConfirmed) return;
 
                 // ✅ Compat: mandamos monto_pagado + monto por si el back espera alias
                 resp = await pagarCuota({
@@ -521,6 +538,19 @@ Total a pagar con descuento: $${money(totalConDesc)}.`;
                 numero = await buscarUltimoReciboConPolling(creditoId, 5, 800);
             }
 
+            // ✅ Feedback de éxito (faltaba)
+            const tituloOk = modo === "parcial" ? "Pago registrado" : "Liquidación registrada";
+            const textoOk = numero
+                ? `Operación confirmada. Recibo #${numero}.`
+                : "Operación confirmada. No se pudo detectar el número de recibo automáticamente.";
+
+            await Swal.fire({
+                title: tituloOk,
+                text: textoOk,
+                icon: "success",
+                confirmButtonText: numero ? "Ver recibo" : "Continuar"
+            });
+
             // ✅ Primero refrescamos en el padre (de verdad), luego navegamos al recibo
             if (onSuccess) {
                 await Promise.resolve(onSuccess(creditoId));
@@ -528,23 +558,39 @@ Total a pagar con descuento: $${money(totalConDesc)}.`;
 
             if (numero) {
                 await goReciboRobusto(numero);
+                return;
             }
+
+            // Si no hay recibo detectable, cerramos el modal para evitar “estado colgado”
+            onClose?.();
         } catch (e) {
             const msg = normalizarErrorPago(e);
             setError(msg);
 
-            // Si el back devolvió estado de negocio (409) lo mostramos claro
+            // Antes sólo mostraba Swal en 409; ahora siempre, con severidad según status
             const status = e?.status ?? e?.response?.status ?? null;
-            if (status === 409) {
+
+            if (status === 409 || status === 403) {
                 await Swal.fire({
                     title: "No se pudo registrar",
                     text: msg,
-                    icon: "warning"
+                    icon: "warning",
+                    confirmButtonText: "Entendido"
                 });
+            } else {
+                await swalError(e);
             }
         } finally {
             setSaving(false);
         }
+    };
+
+    const handleClose = async () => {
+        if (saving) {
+            await swalWarn("Operación en curso", "Hay una operación en curso. Espere a que finalice.");
+            return;
+        }
+        onClose?.();
     };
 
     // Usuarios sin permiso para impactar pagos no ven el modal
@@ -563,7 +609,7 @@ Total a pagar con descuento: $${money(totalConDesc)}.`;
                         {loadingResumen ? " — actualizando..." : ""}
                     </h4>
                     <button
-                        onClick={onClose}
+                        onClick={handleClose}
                         className="rounded px-2 py-1 text-sm text-gray-600 hover:bg-gray-100"
                         disabled={saving}
                         title={saving ? "Hay una operación en curso" : "Cerrar"}
@@ -746,7 +792,7 @@ Total a pagar con descuento: $${money(totalConDesc)}.`;
                             <button
                                 type="button"
                                 className="rounded-md border px-3 py-2 text-sm hover:bg-gray-50"
-                                onClick={onClose}
+                                onClick={handleClose}
                                 disabled={saving}
                             >
                                 Cancelar

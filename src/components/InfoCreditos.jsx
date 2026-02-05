@@ -111,6 +111,25 @@ const InfoCreditos = ({ creditos = [], refetchCreditos }) => {
     // sobre lo que venga por props en el useEffect.
     const creditosOverrideRef = useRef({}); // { [id]: creditoFresh }
 
+    // ✅ Anti-spam de alerts (si el usuario insiste clickeando)
+    const lastAlertRef = useRef({ key: "", at: 0 });
+    const fireOnce = async (key, opts, cooldownMs = 900) => {
+        const now = Date.now();
+        const last = lastAlertRef.current || { key: "", at: 0 };
+        if (last.key === key && now - last.at < cooldownMs) return;
+        lastAlertRef.current = { key, at: now };
+        await Swal.fire(opts);
+    };
+
+    // ✅ Bloqueos por estado (LIBRE y general)
+    const motivoBloqueoPorEstado = (credito) => {
+        const st = safeLower(credito?.estado);
+        if (st === "anulado") return "Crédito anulado: no se permiten pagos.";
+        if (st === "refinanciado") return "Crédito refinanciado: los pagos deben hacerse sobre el crédito nuevo.";
+        if (st === "pagado") return "Crédito pagado: no se permiten pagos.";
+        return null;
+    };
+
     // Reemplaza en lista el crédito refrescado desde backend
     // (devuelve el crédito fresco para poder decidir flujos sin depender del estado async)
     const refreshCreditoEnLista = async (id) => {
@@ -252,8 +271,41 @@ const InfoCreditos = ({ creditos = [], refetchCreditos }) => {
 
     // 🔹 Abre modal de pago LIBRE siempre con resumen cargado (si es posible)
     const abrirPagoLibreDesdeUI = async ({ credito, cuotaLibreId, modo }) => {
-        if (!cuotaLibreId || !credito?.id) return;
+        if (!credito?.id) return;
+
+        // ✅ SweetAlert faltante: bloqueo por estado (si por algún motivo llegan a esta función)
+        const motivo = motivoBloqueoPorEstado(credito);
+        if (motivo) {
+            await fireOnce(`pagoLibreBloq:${credito.id}:${safeLower(credito.estado)}`, {
+                icon: "warning",
+                title: "Acción no disponible",
+                text: motivo
+            });
+            return;
+        }
+
+        if (!cuotaLibreId) {
+            await fireOnce(`pagoLibreSinCuota:${credito.id}`, {
+                icon: "error",
+                title: "No se pudo abrir el pago",
+                text: "No se encontró la cuota LIBRE (cuota abierta). Refrescá el crédito e intentá nuevamente."
+            });
+            // Intento de auto-reparación suave: refrescar el crédito
+            await refreshCreditoEnLista(credito.id);
+            return;
+        }
+
         const resumenData = await ensureResumenLibre(credito.id);
+
+        // ✅ SweetAlert faltante: si no hay resumen (o falló), avisamos pero dejamos que el modal refresque igual
+        if (!resumenData) {
+            await fireOnce(`pagoLibreSinResumen:${credito.id}`, {
+                icon: "info",
+                title: "Resumen en actualización",
+                text: "No se pudo obtener el resumen LIBRE en este momento. El modal intentará actualizarlo automáticamente."
+            });
+        }
+
         setPagoLibre({
             open: true,
             credito,
@@ -268,6 +320,20 @@ const InfoCreditos = ({ creditos = [], refetchCreditos }) => {
         const credito = arg?.credito ?? arg;
         if (!credito?.id) return;
 
+        // SweetAlert explícito si está bloqueado por estado (aunque el botón esté deshabilitado)
+        const motivo = motivoBloqueoPorEstado(credito);
+        if (motivo) {
+            await fireOnce(`refiBloq:${credito.id}:${safeLower(credito.estado)}`, {
+                icon: "warning",
+                title: "No se puede refinanciar",
+                text:
+                    safeLower(credito.estado) === "refinanciado"
+                        ? "Crédito ya refinanciado."
+                        : motivo
+            });
+            return;
+        }
+
         // refresco puntual (evita abrir con datos viejos)
         const fresh = await refreshCreditoEnLista(credito.id);
         const creditoFinal = fresh || credito;
@@ -277,6 +343,13 @@ const InfoCreditos = ({ creditos = [], refetchCreditos }) => {
 
         if (modalidad === "libre") {
             resumenData = await ensureResumenLibre(creditoFinal.id);
+            if (!resumenData) {
+                await fireOnce(`refiSinResumen:${creditoFinal.id}`, {
+                    icon: "info",
+                    title: "Resumen en actualización",
+                    text: "No se pudo obtener el resumen LIBRE. Podés reintentar en unos segundos."
+                });
+            }
         }
 
         setRefi({

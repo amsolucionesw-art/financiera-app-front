@@ -146,11 +146,22 @@ export async function apiFetch(path, options = {}) {
 
     const url = buildURL(path, params);
 
-    const res = await fetch(url, {
-        headers,
-        body: finalBody,
-        ...rest,
-    });
+    let res;
+    try {
+        res = await fetch(url, {
+            headers,
+            body: finalBody,
+            ...rest,
+        });
+    } catch (networkErr) {
+        // ✅ Error de red: devolvemos formato compatible con normalizeApiError (status/data/response)
+        const err = new Error(networkErr?.message || 'Error de red o servidor.');
+        err.status = null;
+        err.data = null;
+        err.payload = null;
+        err.response = { status: null, data: null };
+        throw err;
+    }
 
     if (res.status === 204) return null;
 
@@ -171,13 +182,26 @@ export async function apiFetch(path, options = {}) {
     }
 
     if (!res.ok) {
-        const message = (payload && (payload.message || payload.error)) || res.statusText || 'Error en API';
+        const message =
+            (payload && (payload.message || payload.error)) ||
+            res.statusText ||
+            'Error en API';
+
         const err = new Error(message);
+
+        // ✅ Campos actuales
         err.status = res.status;
         err.payload = payload;
+
+        // ✅ Campos COMPAT para que cuotaService.normalizeApiError funcione siempre
+        // (espera e.data o e.response.data, e.response.status, etc.)
+        err.data = payload;
+        err.response = { status: res.status, data: payload };
+
         if (payload && Array.isArray(payload.errors)) {
             err.errors = payload.errors;
         }
+
         throw err;
     }
 

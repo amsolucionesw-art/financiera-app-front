@@ -1,5 +1,6 @@
 // src/components/creditos/CreditoCard.jsx
 import React from "react";
+import Swal from "sweetalert2";
 import {
     BadgeDollarSign,
     CheckCircle2,
@@ -426,6 +427,43 @@ const CreditoCard = ({
 
     const isOpen = abiertoId === c.id;
 
+    /* ─────────────────────────────────────────────────────────────
+       SweetAlert2 helpers (evita duplicación y agrega confirmaciones)
+    ───────────────────────────────────────────────────────────── */
+    const swalBlocked = (title, text) =>
+        Swal.fire({
+            icon: "info",
+            title,
+            text,
+            confirmButtonText: "Entendido"
+        });
+
+    const swalError = (err, fallback = "No se pudo completar la acción.") => {
+        const msg =
+            (typeof err === "string" && err) ||
+            err?.response?.data?.message ||
+            err?.message ||
+            fallback;
+
+        return Swal.fire({
+            icon: "error",
+            title: "Error",
+            text: msg,
+            confirmButtonText: "Cerrar"
+        });
+    };
+
+    const swalConfirm = (opts) =>
+        Swal.fire({
+            icon: "warning",
+            showCancelButton: true,
+            confirmButtonText: opts?.confirmText || "Confirmar",
+            cancelButtonText: opts?.cancelText || "Cancelar",
+            confirmButtonColor: "#4f46e5",
+            cancelButtonColor: "#6b7280",
+            ...opts
+        });
+
     return (
         <article
             key={c.id}
@@ -489,8 +527,40 @@ const CreditoCard = ({
                                 }`}
                                 onClick={async (e) => {
                                     e.stopPropagation();
-                                    if (!cuotaLibre?.id || parcialBloqueado) return;
-                                    await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "parcial" });
+
+                                    if (bloqueadoPorEstado) {
+                                        await swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                        return;
+                                    }
+
+                                    if (parcialBloqueado) {
+                                        await swalBlocked("Abono parcial no disponible", "En el 3er ciclo no se permite abono parcial.");
+                                        return;
+                                    }
+
+                                    if (!cuotaLibre?.id) {
+                                        await Swal.fire({
+                                            icon: "error",
+                                            title: "No se encontró la cuota abierta",
+                                            text: "No se pudo determinar la cuota LIBRE para registrar el pago. Refresque e intente nuevamente.",
+                                            confirmButtonText: "Cerrar"
+                                        });
+                                        return;
+                                    }
+
+                                    try {
+                                        const res = await swalConfirm({
+                                            title: "Registrar abono parcial",
+                                            html: `Se abrirá el pago parcial para el <b>Crédito #${c.id}</b>.`,
+                                            confirmText: "Continuar"
+                                        });
+
+                                        if (!res.isConfirmed) return;
+
+                                        await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "parcial" });
+                                    } catch (err) {
+                                        await swalError(err);
+                                    }
                                 }}
                                 title={
                                     motivoBloqueoPagos ||
@@ -505,8 +575,35 @@ const CreditoCard = ({
                                 className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                                 onClick={async (e) => {
                                     e.stopPropagation();
-                                    if (!cuotaLibre?.id) return;
-                                    await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "total" });
+
+                                    if (bloqueadoPorEstado) {
+                                        await swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                        return;
+                                    }
+
+                                    if (!cuotaLibre?.id) {
+                                        await Swal.fire({
+                                            icon: "error",
+                                            title: "No se encontró la cuota abierta",
+                                            text: "No se pudo determinar la cuota LIBRE para registrar el pago. Refresque e intente nuevamente.",
+                                            confirmButtonText: "Cerrar"
+                                        });
+                                        return;
+                                    }
+
+                                    try {
+                                        const res = await swalConfirm({
+                                            title: "Liquidar crédito",
+                                            html: `Se abrirá la liquidación total del <b>Crédito #${c.id}</b>.<br/>Total estimado hoy: <b>$${money(totalPendienteHoy)}</b>`,
+                                            confirmText: "Continuar"
+                                        });
+
+                                        if (!res.isConfirmed) return;
+
+                                        await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "total" });
+                                    } catch (err) {
+                                        await swalError(err);
+                                    }
                                 }}
                                 title={motivoBloqueoPagos || "Liquidar crédito (Crédito libre)"}
                             >
@@ -520,7 +617,10 @@ const CreditoCard = ({
                         <>
                             <button
                                 className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-400 bg-white cursor-not-allowed"
-                                onClick={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                }}
                                 title={motivoBloqueoPagos || "Acción no disponible"}
                                 disabled
                             >
@@ -529,7 +629,10 @@ const CreditoCard = ({
 
                             <button
                                 className="inline-flex items-center gap-1 rounded-md bg-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 cursor-not-allowed"
-                                onClick={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                }}
                                 title={motivoBloqueoPagos || "Acción no disponible"}
                                 disabled
                             >
@@ -544,10 +647,27 @@ const CreditoCard = ({
                             className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${
                                 puedeRefinanciar ? "bg-indigo-600 hover:bg-indigo-700" : "bg-gray-300 text-gray-600 cursor-not-allowed"
                             }`}
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.stopPropagation();
-                                if (!puedeRefinanciar) return;
-                                onAbrirRefi?.({ credito: c });
+
+                                if (!puedeRefinanciar) {
+                                    await swalBlocked("No se puede refinanciar", motivoBloqueoRefi || "Acción no disponible.");
+                                    return;
+                                }
+
+                                try {
+                                    const res = await swalConfirm({
+                                        title: "Refinanciar crédito",
+                                        html: `Se abrirá la refinanciación del <b>Crédito #${c.id}</b>.`,
+                                        confirmText: "Continuar"
+                                    });
+
+                                    if (!res.isConfirmed) return;
+
+                                    onAbrirRefi?.({ credito: c });
+                                } catch (err) {
+                                    await swalError(err);
+                                }
                             }}
                             title={puedeRefinanciar ? "Refinanciar crédito" : (motivoBloqueoRefi || "No se puede refinanciar")}
                             disabled={!puedeRefinanciar}
@@ -559,9 +679,13 @@ const CreditoCard = ({
                     {/* Ver recibos */}
                     <button
                         className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                             e.stopPropagation();
-                            onAbrirRecibos?.(c);
+                            try {
+                                onAbrirRecibos?.(c);
+                            } catch (err) {
+                                await swalError(err);
+                            }
                         }}
                         title="Ver recibos del crédito"
                     >
@@ -571,9 +695,21 @@ const CreditoCard = ({
                     {/* Descargar ficha */}
                     <button
                         className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                             e.stopPropagation();
-                            onImprimirFicha?.(c.id);
+                            try {
+                                const res = await swalConfirm({
+                                    icon: "question",
+                                    title: "Descargar ficha",
+                                    html: `Se descargará la ficha (PDF) del <b>Crédito #${c.id}</b>.`,
+                                    confirmText: "Descargar"
+                                });
+                                if (!res.isConfirmed) return;
+
+                                await onImprimirFicha?.(c.id);
+                            } catch (err) {
+                                await swalError(err, "No se pudo descargar la ficha.");
+                            }
                         }}
                         title="Descargar ficha (PDF)"
                     >
@@ -586,10 +722,26 @@ const CreditoCard = ({
                             className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${
                                 estadoLower === "anulado" ? "bg-gray-300 text-gray-600 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700"
                             }`}
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.stopPropagation();
-                                if (estadoLower === "anulado") return;
-                                onAbrirCancelar?.({ credito: c });
+
+                                if (estadoLower === "anulado") {
+                                    await swalBlocked("Acción bloqueada", "Crédito anulado: no se puede cancelar.");
+                                    return;
+                                }
+
+                                try {
+                                    const res = await swalConfirm({
+                                        title: "Cancelar crédito",
+                                        html: `Se abrirá la cancelación anticipada del <b>Crédito #${c.id}</b>.`,
+                                        confirmText: "Continuar"
+                                    });
+                                    if (!res.isConfirmed) return;
+
+                                    onAbrirCancelar?.({ credito: c });
+                                } catch (err) {
+                                    await swalError(err);
+                                }
                             }}
                             title={estadoLower === "anulado" ? "Crédito anulado: no se puede cancelar." : "Cancelar crédito (pago anticipado)"}
                             disabled={estadoLower === "anulado"}
@@ -895,8 +1047,33 @@ const CreditoCard = ({
                                                         : "border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50"
                                                 }`}
                                                 onClick={async () => {
-                                                    if (!cuotaLibre?.id || parcialBloqueado) return;
-                                                    await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "parcial" });
+                                                    if (parcialBloqueado) {
+                                                        await swalBlocked("Abono parcial no disponible", "En el 3er ciclo no se permite abono parcial.");
+                                                        return;
+                                                    }
+                                                    if (!cuotaLibre?.id) {
+                                                        await Swal.fire({
+                                                            icon: "error",
+                                                            title: "No se encontró la cuota abierta",
+                                                            text: "No se pudo determinar la cuota LIBRE para registrar el pago. Refresque e intente nuevamente.",
+                                                            confirmButtonText: "Cerrar"
+                                                        });
+                                                        return;
+                                                    }
+
+                                                    try {
+                                                        const res = await swalConfirm({
+                                                            title: "Registrar abono parcial",
+                                                            html: `Se abrirá el pago parcial para el <b>Crédito #${c.id}</b>.`,
+                                                            confirmText: "Continuar"
+                                                        });
+
+                                                        if (!res.isConfirmed) return;
+
+                                                        await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "parcial" });
+                                                    } catch (err) {
+                                                        await swalError(err);
+                                                    }
                                                 }}
                                                 disabled={parcialBloqueado}
                                                 title={
@@ -910,8 +1087,29 @@ const CreditoCard = ({
                                             <button
                                                 className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
                                                 onClick={async () => {
-                                                    if (!cuotaLibre?.id) return;
-                                                    await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "total" });
+                                                    if (!cuotaLibre?.id) {
+                                                        await Swal.fire({
+                                                            icon: "error",
+                                                            title: "No se encontró la cuota abierta",
+                                                            text: "No se pudo determinar la cuota LIBRE para registrar el pago. Refresque e intente nuevamente.",
+                                                            confirmButtonText: "Cerrar"
+                                                        });
+                                                        return;
+                                                    }
+
+                                                    try {
+                                                        const res = await swalConfirm({
+                                                            title: "Liquidar crédito",
+                                                            html: `Se abrirá la liquidación total del <b>Crédito #${c.id}</b>.<br/>Total estimado hoy: <b>$${money(totalPendienteHoy)}</b>`,
+                                                            confirmText: "Continuar"
+                                                        });
+
+                                                        if (!res.isConfirmed) return;
+
+                                                        await onAbrirPagoLibre?.({ credito: c, cuotaLibreId: cuotaLibre.id, modo: "total" });
+                                                    } catch (err) {
+                                                        await swalError(err);
+                                                    }
                                                 }}
                                                 title={motivoBloqueoPagos || "Liquidar crédito (Crédito libre)"}
                                             >
@@ -926,6 +1124,9 @@ const CreditoCard = ({
                                                 className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-400 bg-white cursor-not-allowed"
                                                 disabled
                                                 title={motivoBloqueoPagos || "Acción no disponible"}
+                                                onClick={async () => {
+                                                    await swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                                }}
                                             >
                                                 Abono parcial
                                             </button>
@@ -933,6 +1134,9 @@ const CreditoCard = ({
                                                 className="inline-flex items-center gap-1 rounded-md bg-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 cursor-not-allowed"
                                                 disabled
                                                 title={motivoBloqueoPagos || "Acción no disponible"}
+                                                onClick={async () => {
+                                                    await swalBlocked("Acción bloqueada", motivoBloqueoPagos || "Acción no disponible.");
+                                                }}
                                             >
                                                 Liquidar crédito
                                             </button>

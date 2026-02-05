@@ -327,6 +327,9 @@ export const pagarCuota = ({
     // legacy
     descuento_sobre,
     descuento_porcentaje,
+
+    // ✅ NUEVO: alias compat para modal (manda "monto" además de monto_pagado)
+    monto = null,
 }) =>
     registrarPagoTotal({
         cuota_id: cuota_id ?? cuotaId,
@@ -337,7 +340,9 @@ export const pagarCuota = ({
         descuento_scope,
         descuento_mora,
         ciclo_libre,
-        monto_pagado,
+
+        // ✅ Si mandan "monto" desde UI, lo convertimos a monto_pagado
+        monto_pagado: monto_pagado ?? monto,
 
         descuento_sobre,
         descuento_porcentaje,
@@ -398,3 +403,4 @@ export default {
     obtenerCuotasConPagos,
     obtenerResumenLibre,
 };
+
