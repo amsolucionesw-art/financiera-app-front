@@ -1009,24 +1009,48 @@ export const construirFichaHTML = construirHTMLFicha;
 
 /* ───────────────── Descarga/Apertura de PDF desde el BACK ───────────────── */
 
+/**
+ * ✅ FIX CRÍTICO:
+ * - Agrega credentials: 'include' (si el backend valida cookie/sesión)
+ * - Si el backend devuelve 401/403/HTML, lo capturamos con mejor diagnóstico
+ * - Evita “descargar” HTML/JSON como si fuera PDF
+ */
+const assertPdfResponse = async (res) => {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (ct.includes('application/pdf')) return;
+
+  // si no es pdf, intento leer texto para debug
+  const txt = await res.text().catch(() => '');
+  const err = new Error(`Respuesta no es PDF (Content-Type: ${ct || 'desconocido'}).`);
+  err.status = res.status;
+  err.data = { body: txt || null, contentType: ct || null };
+  throw err;
+};
+
 export const descargarFichaCreditoPDF = async (creditoId, filename) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
+
+  // ✅ Construcción robusta: API_URL_BASE ya trae prefijo, url empieza con '/'
   const absoluteUrl = `${API_URL_BASE}${url}`;
 
   const res = await fetch(absoluteUrl, {
     method: 'GET',
     headers: {
       ...getAuthHeader()
-    }
+    },
+    credentials: 'include'
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     const err = new Error(`No se pudo descargar la ficha (HTTP ${res.status}). ${txt || ''}`);
     err.status = res.status;
-    err.data = { body: txt || null };
+    err.data = { body: txt || null, url: absoluteUrl };
     throw err;
   }
+
+  // ✅ Si el backend devolvió HTML/JSON por error, esto lo frena acá
+  await assertPdfResponse(res);
 
   const blob = await res.blob();
   const name = filename || `ficha-credito-${creditoId}.pdf`;
@@ -1048,16 +1072,19 @@ export const abrirFichaCreditoPDF = async (creditoId) => {
     method: 'GET',
     headers: {
       ...getAuthHeader()
-    }
+    },
+    credentials: 'include'
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     const err = new Error(`No se pudo abrir la ficha (HTTP ${res.status}). ${txt || ''}`);
     err.status = res.status;
-    err.data = { body: txt || null };
+    err.data = { body: txt || null, url: absoluteUrl };
     throw err;
   }
+
+  await assertPdfResponse(res);
 
   const blob = await res.blob();
   const blobUrl = URL.createObjectURL(blob);
