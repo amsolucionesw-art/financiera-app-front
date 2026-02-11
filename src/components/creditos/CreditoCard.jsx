@@ -960,7 +960,7 @@ const CreditoCard = ({
                                 <div className="flex flex-wrap items-center gap-2">
                                     <TrendingUp size={16} className="text-gray-500" />
                                     <dt className="font-medium text-gray-600">
-                                        {esLibre ? "Interés acumulado (devengado):" : "Pagos de intereses acumulados:"}
+                                        {esLibre ? "Interés acumulado" : "Pagos de intereses acumulados:"}
                                     </dt>
                                     <dd className="font-mono text-gray-800">${money(c.interes_acumulado)}</dd>
                                 </div>
