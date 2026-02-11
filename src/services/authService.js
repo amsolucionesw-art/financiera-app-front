@@ -9,7 +9,9 @@ import { jwtDecode } from 'jwt-decode';
  * - Guarda el token en 'token' y 'authToken' por compatibilidad.
  */
 export const login = async (nombre_usuario, password) => {
-  const resp = await apiFetch('/auth/login', {
+  // ✅ IMPORTANTE: path relativo (sin /api). apiClient aplica VITE_API_PREFIX.
+  // Evitamos slash inicial para no depender de cómo se normalice en el builder.
+  const resp = await apiFetch('auth/login', {
     method: 'POST',
     body: { nombre_usuario, password },
   });

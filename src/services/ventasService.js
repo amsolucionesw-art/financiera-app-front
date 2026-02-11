@@ -5,10 +5,8 @@ import apiFetch from './apiClient';
 
 /* ───────────────── Config & helpers ───────────────── */
 
-// OJO: API_URL (en apiClient) ya incluye /api por defecto.
-// Acá no sumamos otro prefijo para evitar /api/api.
-const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // por defecto sin prefijo
-
+// ✅ apiClient ya resuelve /api (VITE_API_PREFIX) internamente.
+// Acá NO agregamos prefijo para evitar /api/api.
 const joinPath = (...parts) =>
     '/' +
     parts
@@ -16,8 +14,8 @@ const joinPath = (...parts) =>
         .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
         .join('/');
 
-// Backend: endpoints en `${API_PREFIX}/ventas/manuales`
-const BASE_VENTAS = joinPath(API_PREFIX, 'ventas', 'manuales');
+// Backend: endpoints en "/ventas/manuales"
+const BASE_VENTAS = '/ventas/manuales';
 
 /* ───────────────── Helpers ───────────────── */
 
@@ -83,12 +81,10 @@ const normalizeTipoCredito = (v) => {
     const s = String(v ?? '').trim().toLowerCase();
     if (!s) return undefined; // dejamos que el back aplique su default ('mensual')
 
-    // Hacemos el parser más tolerante a variantes de texto
     if (s === 'semanal' || s === 'semanales' || s.startsWith('sem')) return 'semanal';
     if (s === 'quincenal' || s === 'quincenales' || s.startsWith('quin')) return 'quincenal';
     if (s === 'mensual' || s === 'mensuales' || s.startsWith('men')) return 'mensual';
 
-    // Si viene algo raro, caemos a mensual como comportamiento por defecto
     return 'mensual';
 };
 
@@ -120,7 +116,6 @@ const normalizePayload = (data = {}) => {
         if (normalizado !== undefined) {
             out.tipo_credito = normalizado;
         } else {
-            // si no vino nada, dejamos que el backend aplique su default
             delete out.tipo_credito;
         }
     }
@@ -169,7 +164,7 @@ const normalizeListParams = (params = {}) => {
 
 /* ───────────────── Endpoints ───────────────── */
 
-/** Listar ventas manuales (filtros: { desde, hasta, mes, anio, q, forma_pago_id, doc_cliente, vendedor, numero_comprobante }) */
+/** Listar ventas manuales */
 export const listarVentas = (params = {}) =>
     apiFetch(BASE_VENTAS, { params: normalizeListParams(params) });
 
@@ -189,9 +184,6 @@ export const crearVenta = (data) =>
 
 /**
  * ❌ Edición de ventas deshabilitada
- * Dejado como stub para detectar rápidamente usos accidentales desde el front.
- * (No se exporta por default, pero sí como named export por si alguien lo tenía importado;
- *  si lo llaman, falla con un mensaje claro.)
  */
 export const actualizarVenta = async () => {
     throw new Error('Edición de ventas deshabilitada. Solo se permite crear y eliminar.');

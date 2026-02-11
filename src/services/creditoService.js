@@ -4,9 +4,42 @@ import apiFetch from './apiClient.js';
 
 /* ───────────────── Config & helpers de ruta ───────────────── */
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // por defecto sin prefijo
-const API_URL_RAW = import.meta.env.VITE_API_URL || ''; // base absoluta para fetch directo (PDF)
-const API_URL = String(API_URL_RAW || '').replace(/\/+$/g, ''); // evita doble //
+// ✅ IMPORTANTE: apiClient ya aplica VITE_API_PREFIX (/api).
+// Acá NO sumamos otro prefijo para evitar /api/api.
+
+// Helpers para construir URL absoluta para fetch directo (PDF) sin duplicar /api
+const normalizeBase = (url) => (url || '').trim().replace(/\/+$/g, '');
+const normalizePrefix = (p) => {
+  if (p == null) return '/api';
+  const s = String(p).trim();
+  if (s === '') return '';
+  const withSlash = s.startsWith('/') ? s : `/${s}`;
+  return withSlash.replace(/\/+$/g, '');
+};
+
+const joinBaseAndPrefix = (base, prefix) => {
+  const b = normalizeBase(base);
+  const p = normalizePrefix(prefix);
+
+  if (!p) return b;
+  if (!b) return p;
+
+  const bLower = b.toLowerCase();
+  const pLower = p.toLowerCase();
+  if (bLower.endsWith(pLower)) return b; // ya lo tiene
+
+  return `${b}${p}`;
+};
+
+const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();   // ideal: https://api...cloud (sin /api)
+const API_BASE_ENV = (import.meta.env.VITE_API_BASE || '').trim(); // opcional
+const API_PREFIX_ENV = normalizePrefix(import.meta.env.VITE_API_PREFIX ?? '/api');
+
+// ✅ Base final para fetch directo (PDF)
+const API_URL_BASE =
+  RAW_API_URL
+    ? joinBaseAndPrefix(RAW_API_URL, API_PREFIX_ENV)
+    : (API_BASE_ENV ? joinBaseAndPrefix(API_BASE_ENV, API_PREFIX_ENV) : API_PREFIX_ENV);
 
 /* Une segmentos asegurando que no queden dobles slashes internos */
 const joinPath = (...parts) =>
@@ -16,7 +49,7 @@ const joinPath = (...parts) =>
     .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
     .join('/');
 
-const BASE = joinPath(API_PREFIX, 'creditos');
+const BASE = joinPath('creditos');
 
 /* ───────────────── Helpers numéricos ───────────────── */
 
@@ -250,10 +283,6 @@ const normalizeRefiFieldsDeep = (payload) => {
 
 /* ───────────────── LIBRE: helpers de resumen (anti-parpadeo) ───────────────── */
 
-/**
- * Cache chica para evitar múltiples requests por re-renders (parpadeo).
- * TTL cortísimo: suficiente para el render inicial + efectos.
- */
 const __resumenLibreCache = new Map(); // key -> { ts, data }
 const __RESUMEN_TTL_MS = 3500;
 
@@ -275,11 +304,6 @@ const setResumenLibreCached = (id, fecha, data) => {
   __resumenLibreCache.set(key, { ts: Date.now(), data });
 };
 
-/**
- * ✅ NUEVO: invalida cache del resumen LIBRE.
- * - si pasás fecha => invalida esa key puntual
- * - si NO pasás fecha => invalida todas las keys de ese crédito
- */
 export const invalidarResumenLibreCache = (id, fecha) => {
   const numId = Number(id);
   if (!Number.isFinite(numId) || numId <= 0) return;
@@ -302,10 +326,10 @@ const normalizeResumenLibre = (raw) => {
 
   const saldo_capital = sanitizeNumber(
     r.saldo_capital ??
-      r.saldo_capital_pendiente ??
-      r.capital_pendiente ??
-      r.capital ??
-      0
+    r.saldo_capital_pendiente ??
+    r.capital_pendiente ??
+    r.capital ??
+    0
   );
 
   // HOY (ciclo actual) raw
@@ -332,7 +356,6 @@ const normalizeResumenLibre = (raw) => {
     r.mora ??
     null;
 
-  // total “real” = max(total, hoy)
   const interes_pendiente_total = Math.max(
     sanitizeNumber(interesTotalRaw),
     interes_ciclo_hoy
@@ -343,7 +366,6 @@ const normalizeResumenLibre = (raw) => {
     mora_ciclo_hoy
   );
 
-  // meta opcional (si el back la manda)
   const extractCiclo = (v) => {
     if (v === null || v === undefined) return null;
     if (typeof v === 'string') {
@@ -368,11 +390,11 @@ const normalizeResumenLibre = (raw) => {
 
   const totalActualIn = sanitizeNumber(
     r.total_actual ??
-      r.total_liquidacion_hoy ??
-      r.total_a_cancelar_hoy ??
-      r.total_pagar_hoy ??
-      r.total ??
-      0
+    r.total_liquidacion_hoy ??
+    r.total_a_cancelar_hoy ??
+    r.total_pagar_hoy ??
+    r.total ??
+    0
   );
 
   const total_actual =
@@ -582,8 +604,9 @@ export const solicitarAnulacionCredito = async ({ creditoId, motivo }) => {
     datos: { creditoId, motivo }
   };
 
-  const pathPendientes = joinPath(API_PREFIX, 'tareas', 'pendientes');
-  const pathCanonico = joinPath(API_PREFIX, 'tareas');
+  // ✅ No anteponer prefijo acá: apiClient lo hará
+  const pathPendientes = joinPath('tareas', 'pendientes');
+  const pathCanonico = joinPath('tareas');
 
   try {
     return await apiFetchSafe(pathPendientes, { method: 'POST', body }, 'No se pudo solicitar la anulación del crédito.');
@@ -697,7 +720,6 @@ export const previewLiquidacionCredito = async (
     }
   }
 
-  // Distribución del descuento
   let descMora = 0;
   let descPrincipal = 0;
 
@@ -750,7 +772,6 @@ const calcularTotalActualFront = (credito) => {
   if (!credito) return 0;
 
   if (lower(credito.modalidad_credito) === 'libre') {
-    // ⚠️ Fallback: para LIBRE real, lo correcto es usar /resumen-libre.
     const capital = sanitizeNumber(credito.saldo_actual || 0);
     const cuota = Array.isArray(credito.cuotas) ? credito.cuotas[0] : null;
     const mora = sanitizeNumber(cuota?.intereses_vencidos_acumulados || 0);
@@ -886,7 +907,7 @@ const construirHTMLFicha = (credito) => {
     </head>
     <body>
       <h1>Ficha de Crédito</h1>
-      <div class="muted">Emitido: ${fechaEmision}</div>
+      <div class="muted">Emitido: ${new Date().toISOString().slice(0, 10)}</div>
 
       <div class="section">
         <div class="title">Cliente</div>
@@ -967,10 +988,10 @@ const abrirVentanaImpresion = (html) => {
   w.document.write(html);
   w.document.close();
   w.onload = () => {
-    try { w.focus(); } catch (_) {}
-    try { w.print(); } catch (_) {}
+    try { w.focus(); } catch (_) { }
+    try { w.print(); } catch (_) { }
     setTimeout(() => {
-      try { w.close(); } catch (_) {}
+      try { w.close(); } catch (_) { }
     }, 500);
   };
 };
@@ -990,14 +1011,13 @@ export const construirFichaHTML = construirHTMLFicha;
 
 export const descargarFichaCreditoPDF = async (creditoId, filename) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
-  const absoluteUrl = `${API_URL}${url}`;
+  const absoluteUrl = `${API_URL_BASE}${url}`;
 
   const res = await fetch(absoluteUrl, {
     method: 'GET',
     headers: {
       ...getAuthHeader()
-    },
-    credentials: 'include'
+    }
   });
 
   if (!res.ok) {
@@ -1022,14 +1042,13 @@ export const descargarFichaCreditoPDF = async (creditoId, filename) => {
 
 export const abrirFichaCreditoPDF = async (creditoId) => {
   const url = joinPath(BASE, creditoId, 'ficha.pdf');
-  const absoluteUrl = `${API_URL}${url}`;
+  const absoluteUrl = `${API_URL_BASE}${url}`;
 
   const res = await fetch(absoluteUrl, {
     method: 'GET',
     headers: {
       ...getAuthHeader()
-    },
-    credentials: 'include'
+    }
   });
 
   if (!res.ok) {

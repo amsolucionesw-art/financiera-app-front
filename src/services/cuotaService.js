@@ -4,7 +4,8 @@ import apiFetch from './apiClient.js';
 
 /* ───────────────── Config & helpers de ruta ───────────────── */
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // por defecto sin prefijo
+// ✅ IMPORTANTE: apiClient ya aplica VITE_API_PREFIX (/api).
+// Acá NO sumamos otro prefijo para evitar /api/api.
 
 // Une segmentos evitando dobles slashes
 const joinPath = (...parts) =>
@@ -14,10 +15,10 @@ const joinPath = (...parts) =>
         .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
         .join('/');
 
-const BASE_CUOTAS = joinPath(API_PREFIX, 'cuotas');
-const BASE_PAGOS = joinPath(API_PREFIX, 'pagos');
-const BASE_FORMAS = joinPath(API_PREFIX, 'formas-pago');
-const BASE_CREDIT = joinPath(API_PREFIX, 'creditos');
+const BASE_CUOTAS = joinPath('cuotas');
+const BASE_PAGOS = joinPath('pagos');
+const BASE_FORMAS = joinPath('formas-pago');
+const BASE_CREDIT = joinPath('creditos');
 
 /* ───────────────── Helpers de respuesta ───────────────── */
 /**
@@ -403,4 +404,3 @@ export default {
     obtenerCuotasConPagos,
     obtenerResumenLibre,
 };
-

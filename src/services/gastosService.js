@@ -4,9 +4,8 @@ import apiFetch from './apiClient';
 
 /* ───────────────── Config & helpers ───────────────── */
 
-// OJO: API_URL (en apiClient) ya incluye /api por defecto.
-// Acá no sumamos otro prefijo para evitar /api/api.
-const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // por defecto sin prefijo
+// ✅ IMPORTANTE: apiClient ya aplica VITE_API_PREFIX (/api).
+// Acá NO sumamos otro prefijo para evitar /api/api.
 
 // Une segmentos evitando dobles slashes
 const joinPath = (...parts) =>
@@ -16,7 +15,7 @@ const joinPath = (...parts) =>
         .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
         .join('/');
 
-const BASE_GASTOS = joinPath(API_PREFIX, 'gastos');
+const BASE_GASTOS = joinPath('gastos');
 
 /* ───────────────── Helpers ───────────────── */
 

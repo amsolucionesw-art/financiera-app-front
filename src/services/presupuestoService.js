@@ -1,8 +1,9 @@
 // src/services/presupuestoService.js
 import apiFetch from './apiClient';
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX || ''; // sin /api por defecto
-const BASE = `${API_PREFIX}/presupuestos`;
+// ✅ IMPORTANTE: apiClient ya aplica VITE_API_PREFIX (/api).
+// Acá NO sumamos otro prefijo para evitar /api/api.
+const BASE = `/presupuestos`;
 
 /* Helpers */
 const toNumber = (value) => {
@@ -85,4 +86,11 @@ export const buscarPresupuestos = async ({ id, nombre_destinatario } = {}) => {
 export const obtenerPresupuestoPorNumero = async (numero) => {
     const data = await apiFetch(`${BASE}/${numero}`);
     return parsePresupuesto(data);
+};
+
+export default {
+    obtenerPresupuestos,
+    crearPresupuesto,
+    buscarPresupuestos,
+    obtenerPresupuestoPorNumero
 };

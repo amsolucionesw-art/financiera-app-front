@@ -2,19 +2,70 @@
 // Convención: igual que comprasService/cuotaService.
 // Usa apiClient si está disponible; si no, fallback con fetch JSON.
 
+/* ───────────────── Helpers: API base consistente con apiClient ───────────────── */
+
+const normalizeBase = (url) => (url || '').trim().replace(/\/+$/, '');
+const normalizePrefix = (p) => {
+    if (p == null) return '/api';
+    const s = String(p).trim();
+    if (s === '') return ''; // permite sin prefijo
+    const withSlash = s.startsWith('/') ? s : `/${s}`;
+    return withSlash.replace(/\/+$/, '');
+};
+
+const getApiBaseUrl = () => {
+    const RAW_API_URL = (import.meta?.env?.VITE_API_URL || '').trim();
+    const API_BASE_ENV = (import.meta?.env?.VITE_API_BASE || '').trim();
+    const API_PREFIX_ENV = normalizePrefix(import.meta?.env?.VITE_API_PREFIX || '/api');
+
+    const base =
+        normalizeBase(RAW_API_URL) ||
+        (API_BASE_ENV ? `${normalizeBase(API_BASE_ENV)}${API_PREFIX_ENV}` : API_PREFIX_ENV);
+
+    return normalizeBase(base);
+};
+
+/** Une segmentos evitando dobles slashes */
+const joinPath = (...parts) =>
+    '/' +
+    parts
+        .filter(Boolean)
+        .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
+        .join('/');
+
+/** Construye URL final con la base del API (puede ser "/api" o "https://.../api") */
+const buildApiUrl = (path) => {
+    const p = String(path || '');
+    const norm = p.startsWith('/') ? p : `/${p}`;
+    const base = getApiBaseUrl(); // "/api" o "https://host/api"
+    return `${base}${norm}`.replace(/\/{2,}/g, '/').replace(':/', '://');
+};
+
 let apiFetch = null;
+let __useApiClient = false;
+
 try {
+    // Si apiClient existe, lo usamos y respetamos su buildURL interno.
+    // (No agregamos prefijos aquí).
     ({ apiFetch } = await import('./apiClient.js'));
+    __useApiClient = true;
 } catch (_) {
-    apiFetch = async (url, options = {}) => {
+    // Fallback: fetch directo contra la base del API consistente con apiClient
+    apiFetch = async (pathOrUrl, options = {}) => {
+        const url = /^https?:\/\//i.test(String(pathOrUrl))
+            ? String(pathOrUrl)
+            : buildApiUrl(String(pathOrUrl));
+
         const opts = {
             credentials: 'include',
             headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
             ...options,
         };
+
         if (opts.body && typeof opts.body !== 'string') {
             opts.body = JSON.stringify(opts.body);
         }
+
         const res = await fetch(url, opts);
         if (!res.ok) {
             const text = await res.text().catch(() => '');
@@ -25,22 +76,15 @@ try {
                 throw new Error(text || `HTTP ${res.status}`);
             }
         }
+
         const ct = res.headers.get('Content-Type') || '';
         return ct.includes('application/json') ? res.json() : res.text();
     };
 }
 
-const API_PREFIX = import.meta?.env?.VITE_API_PREFIX ?? ''; // ⚠️ por defecto sin prefijo
-
-// Une segmentos evitando dobles slashes
-const joinPath = (...parts) =>
-    '/' +
-    parts
-        .filter(Boolean)
-        .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
-        .join('/');
-
-const BASE = joinPath(API_PREFIX, 'proveedores');
+// ✅ IMPORTANTE: apiClient ya aplica VITE_API_PREFIX (/api).
+// Por eso acá la base de recursos es SIN prefijo.
+const BASE = joinPath('proveedores');
 
 // Helpers
 const qParams = (obj = {}) =>
@@ -67,7 +111,11 @@ export async function listarProveedores(params = {}) {
     // - Si querés “TODOS” desde el front, acordate de enviar incluirTodos=true cuando NO envíes 'activo'.
     // - Si enviás activo=true/false, el back respeta eso.
     const qs = qParams(def);
+
+    // Si usamos apiClient, pasamos path relativo (apiClient lo resuelve).
+    // Si estamos en fallback, apiFetch ya convierte a URL con base + /api.
     const url = qs ? `${BASE}?${qs}` : BASE;
+
     const res = await apiFetch(url, { method: 'GET' });
 
     // Devolvemos el JSON completo para no perder 'count' que usa la paginación del grid
@@ -121,3 +169,12 @@ export async function buscarProveedores(search = '', extras = {}) {
     });
     return res?.data ?? res;
 }
+
+export default {
+    listarProveedores,
+    obtenerProveedor,
+    crearProveedor,
+    actualizarProveedor,
+    eliminarProveedor,
+    buscarProveedores,
+};

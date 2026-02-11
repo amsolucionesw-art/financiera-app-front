@@ -1,8 +1,6 @@
 // src/services/tareasService.js
 import { apiFetch } from './apiClient';
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX || ''; // p.ej. "/api"
-
 // Une segmentos asegurando que no queden dobles slashes internos
 const joinPath = (...parts) =>
     '/' +
@@ -11,7 +9,10 @@ const joinPath = (...parts) =>
         .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
         .join('/');
 
-const BASE = joinPath(API_PREFIX, 'tareas');
+// ✅ IMPORTANTE: NO anteponer VITE_API_PREFIX acá.
+// apiClient ya arma la base usando VITE_API_PREFIX.
+// Si acá agregamos /api, terminamos en /api/api/...
+const BASE = joinPath('tareas');
 
 /** Lista solo las tareas en estado "pendiente" */
 export const obtenerTareasPendientes = () =>

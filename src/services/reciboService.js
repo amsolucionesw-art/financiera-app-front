@@ -1,8 +1,9 @@
 // src/services/reciboService.js
 import { apiFetch } from './apiClient';
 
-const API_PREFIX = import.meta.env.VITE_API_PREFIX || ''; // p.ej. "/api" si tu backend monta así
-const BASE = `${API_PREFIX}/recibos`;
+// ✅ apiClient ya resuelve /api (VITE_API_PREFIX) internamente.
+// Acá NO agregamos prefijo para evitar /api/api.
+const BASE = `/recibos`;
 
 /**
  * Obtiene un recibo por su número (PK).
@@ -37,3 +38,10 @@ export const obtenerRecibosPorCredito = (creditoId, params) =>
  */
 export const obtenerRecibosPorCuota = (cuotaId, params) =>
     apiFetch(`${BASE}/cuota/${cuotaId}`, { params });
+
+export default {
+    obtenerReciboPorId,
+    obtenerReciboPorPagoId,
+    obtenerRecibosPorCredito,
+    obtenerRecibosPorCuota
+};

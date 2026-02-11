@@ -4,6 +4,35 @@ import apiFetch, { withQuery } from './apiClient';
 
 const BASE = '/informes';
 
+/* ───────────────── Helpers: API base consistente con apiClient ───────────────── */
+
+const normalizeBase = (url) => (url || '').trim().replace(/\/+$/, '');
+const normalizePrefix = (p) => {
+  if (p == null) return '/api';
+  const s = String(p).trim();
+  if (s === '') return ''; // permite sin prefijo si lo desean
+  const withSlash = s.startsWith('/') ? s : `/${s}`;
+  return withSlash.replace(/\/+$/, '');
+};
+
+/**
+ * Replica la lógica de apiClient:
+ * 1) VITE_API_URL (absoluta o relativa) manda
+ * 2) si no, VITE_API_BASE + VITE_API_PREFIX
+ * 3) fallback final: "/api" (same-origin)
+ */
+const getApiBaseUrl = () => {
+  const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();
+  const API_BASE_ENV = (import.meta.env.VITE_API_BASE || '').trim();
+  const API_PREFIX_ENV = normalizePrefix(import.meta.env.VITE_API_PREFIX || '/api');
+
+  const base =
+    normalizeBase(RAW_API_URL) ||
+    (API_BASE_ENV ? `${normalizeBase(API_BASE_ENV)}${API_PREFIX_ENV}` : API_PREFIX_ENV);
+
+  return normalizeBase(base);
+};
+
 /** Limpia params: quita null/undefined/'' y normaliza booleanos */
 const sanitizeParams = (params = {}) => {
   const clean = {};
@@ -47,9 +76,7 @@ export const obtenerInforme = (params = {}) =>
  * Arma querystring y abre ventana nueva → fuerza download.
  *
  * Importante:
- * - Usamos url absoluta construida por apiFetch internamente (porque BASE es relativa).
- * - Para download simple, construimos el path con query y se lo pasamos a apiFetch
- *   como URL absoluta utilizando VITE_API_URL desde apiClient (sin duplicar /api).
+ * - Usa la misma base que apiClient (sin duplicar /api).
  */
 export const descargarInformeExcel = (params = {}) => {
   const clean = sanitizeParams({ ...params, format: 'xlsx' });
@@ -57,11 +84,13 @@ export const descargarInformeExcel = (params = {}) => {
   // withQuery devuelve un path relativo "/informes?...".
   const pathWithQs = withQuery(BASE, clean);
 
-  // Abrimos contra la misma base que usa apiClient (VITE_API_URL).
-  // Como apiClient.buildURL solo es interno, hacemos un truco seguro:
-  // apiFetch acepta path absoluto, así que convertimos a absoluto manualmente.
-  const RAW_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3000/api').replace(/\/+$/, '');
-  const url = `${RAW_BASE}${pathWithQs.startsWith('/') ? '' : '/'}${pathWithQs}`;
+  const apiBase = getApiBaseUrl(); // puede ser "/api" o "https://api....../api"
+  const url = `${apiBase}${pathWithQs.startsWith('/') ? '' : '/'}${pathWithQs}`;
 
   window.open(url, '_blank', 'noopener,noreferrer');
+};
+
+export default {
+  obtenerInforme,
+  descargarInformeExcel,
 };

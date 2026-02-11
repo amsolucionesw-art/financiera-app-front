@@ -3,14 +3,52 @@ import apiFetch, { getAuthHeaders } from './apiClient';
 
 /* ───────────────── Config & helpers ───────────────── */
 
-// OJO: apiClient ya contiene API_URL con /api por defecto.
-// Acá usamos API_URL solo en buildURL para llamados "raw" (blob/descarga).
-const API_PREFIX = import.meta.env.VITE_API_PREFIX ?? ''; // opcional (por defecto sin prefijo)
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+/**
+ * ✅ IMPORTANTE
+ * - apiClient ya aplica VITE_API_PREFIX a todas las rutas relativas.
+ * - Acá NO debemos anteponer VITE_API_PREFIX en BASE_CAJA, sino se genera /api/api/...
+ *
+ * Para descargas "raw" (blob) usamos un buildURL alineado con apiClient:
+ * - VITE_API_URL se trata como base (ideal: https://api.syefinanciera-app.cloud)
+ * - VITE_API_PREFIX se aplica (default: /api)
+ * - Si VITE_API_URL ya incluye el prefijo, no lo duplica
+ */
 
-// ✅ Fallback coherente con apiClient cuando trabajás same-origin/proxy
-// (si tu backend no está en /api, cambiá esto)
-const FALLBACK_API_PREFIX = '/api';
+const normalizeBase = (url) => (url || '').trim().replace(/\/+$/, '');
+const normalizePrefix = (p) => {
+    if (p == null) return '/api';
+    const s = String(p).trim();
+    if (s === '') return '';
+    const withSlash = s.startsWith('/') ? s : `/${s}`;
+    return withSlash.replace(/\/+$/, '');
+};
+
+const joinBaseAndPrefix = (base, prefix) => {
+    const b = normalizeBase(base);
+    const p = normalizePrefix(prefix);
+
+    if (!p) return b;
+    if (!b) return p;
+
+    const bLower = b.toLowerCase();
+    const pLower = p.toLowerCase();
+    if (bLower.endsWith(pLower)) return b;
+
+    return `${b}${p}`;
+};
+
+// Env (alineado con apiClient)
+const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();   // base ideal (SIN /api)
+const API_BASE = (import.meta.env.VITE_API_BASE || '').trim();     // opcional
+const API_PREFIX = normalizePrefix(import.meta.env.VITE_API_PREFIX ?? '/api');
+
+// ✅ Base final absoluta o relativa (/api) para raw fetch
+const API_URL =
+    (RAW_API_URL
+        ? joinBaseAndPrefix(RAW_API_URL, API_PREFIX)
+        : (API_BASE
+            ? joinBaseAndPrefix(API_BASE, API_PREFIX)
+            : API_PREFIX));
 
 // Une segmentos evitando dobles slashes
 const joinPath = (...parts) =>
@@ -20,7 +58,8 @@ const joinPath = (...parts) =>
         .map((s) => String(s).replace(/^\/+|\/+$/g, ''))
         .join('/');
 
-const BASE_CAJA = joinPath(API_PREFIX, 'caja');
+// ✅ NO agregamos API_PREFIX acá
+const BASE_CAJA = joinPath('caja');
 
 // YYYY-MM-DD seguro (UTC) para evitar drift por huso horario
 const toYMD = (v) => {
@@ -87,23 +126,9 @@ const buildURL = (path, params = null) => {
 
     const normalizedPath = joinPath(path);
 
-    // Caso 1: API_URL es vacío → same-origin (Vite proxy / reverse proxy)
-    // En ese caso, si el path no incluye /api, lo preprendemos para que pegue al backend.
-    const base = String(API_URL || '').replace(/\/+$/, '');
-    let full = '';
-
-    if (!base) {
-        if (normalizedPath.startsWith(`${FALLBACK_API_PREFIX}/`) || normalizedPath === FALLBACK_API_PREFIX) {
-            full = normalizedPath;
-        } else {
-            // ⚠️ si ya viene con API_PREFIX (p.ej. "/api/..."), joinPath lo conserva
-            // y esto no duplica.
-            full = `${FALLBACK_API_PREFIX}${normalizedPath}`;
-        }
-    } else {
-        // Caso 2: API_URL viene seteado (ej. http://localhost:3000 o http://localhost:3000/api)
-        full = `${base}${normalizedPath}`;
-    }
+    // API_URL puede ser absoluta (https://...) o relativa (/api)
+    const base = normalizeBase(API_URL);
+    const full = base ? `${base}${normalizedPath}` : normalizedPath;
 
     if (!params) return full;
 
@@ -365,7 +390,7 @@ export const exportarExcel = async ({ desde, hasta, periodo } = {}) => {
                 const t = await res.text();
                 if (t) msg = t;
             }
-        } catch {}
+        } catch { }
         const err = new Error(msg);
         err.status = res.status;
         throw err;
@@ -417,7 +442,7 @@ export const exportarMovimientosExcel = async (params = {}) => {
                 const t = await res.text();
                 if (t) msg = t;
             }
-        } catch {}
+        } catch { }
         const err = new Error(msg);
         err.status = res.status;
         throw err;

@@ -5,21 +5,56 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 import {
-  money,
-  safeLower,
-  fechasCiclosLibre,
-  diffDays,
-  LIBRE_VTO_FICTICIO,
-  calcularTotalActualFront
+    money,
+    safeLower,
+    fechasCiclosLibre,
+    diffDays,
+    LIBRE_VTO_FICTICIO,
+    calcularTotalActualFront
 } from "../../utils/creditos/creditosHelpers.js";
 
-/** Utilidad: base URL del API (dev/prod) */
+/** ─────────────────────────────────────────────────────────────
+ * Utilidad: base URL del API (dev/prod) — alineado con apiClient
+ * - VITE_API_URL se trata como base (sin asumir prefijo)
+ * - VITE_API_PREFIX se aplica (por defecto "/api")
+ * - Si VITE_API_URL ya incluye el prefijo, no lo duplica
+ * - Fallback: localhost:3000 (dev) o same-origin "/api" (prod con proxy)
+ * ───────────────────────────────────────────────────────────── */
+const normalizeBase = (url) => (url || "").trim().replace(/\/+$/, "");
+const normalizePrefix = (p) => {
+    if (p == null) return "/api";
+    const s = String(p).trim();
+    if (s === "") return ""; // permite sin prefijo
+    const withSlash = s.startsWith("/") ? s : `/${s}`;
+    return withSlash.replace(/\/+$/, "");
+};
+
+const joinBaseAndPrefix = (base, prefix) => {
+    const b = normalizeBase(base);
+    const p = normalizePrefix(prefix);
+
+    if (!p) return b;
+    if (!b) return p;
+
+    const bLower = b.toLowerCase();
+    const pLower = p.toLowerCase();
+
+    if (bLower.endsWith(pLower)) return b;
+    return `${b}${p}`;
+};
+
 export const getApiBaseUrl = () => {
-    const env = (import.meta?.env?.VITE_API_URL || "").trim();
-    if (env) return env.replace(/\/+$/, "");
+    const rawUrl = (import.meta?.env?.VITE_API_URL || "").trim();     // ej: https://api... (ideal) o https://api.../api (legacy)
+    const rawBase = (import.meta?.env?.VITE_API_BASE || "").trim();   // opcional
+    const prefix = normalizePrefix(import.meta?.env?.VITE_API_PREFIX ?? "/api");
+
+    if (rawUrl) return joinBaseAndPrefix(rawUrl, prefix).replace(/\/+$/, "");
+
+    if (rawBase) return joinBaseAndPrefix(rawBase, prefix).replace(/\/+$/, "");
+
     const isVite = window.location.port === "5173";
-    const guess = isVite ? "http://localhost:3000/api" : `${window.location.origin}/api`;
-    return guess.replace(/\/+$/, "");
+    const guessBase = isVite ? "http://localhost:3000" : ""; // prod: same-origin (si hubiera proxy)
+    return joinBaseAndPrefix(guessBase, prefix).replace(/\/+$/, "");
 };
 
 /** DESCARGAR FICHA (PDF) 100% EN EL FRONT con jsPDF + autoTable (layout acomodado) */
@@ -105,8 +140,6 @@ export const descargarFichaPDFFront = async (creditoId) => {
 
     // Tasa visible para LIBRE (por ciclo)
     const tasaLibreFicha = Number(c.interes || 0);
-
-
 
     /* === Si es LIBRE, traemos el resumen del ciclo para mostrar KPIs detallados === */
     let resumenLibre = null;
@@ -236,7 +269,6 @@ export const descargarFichaPDFFront = async (creditoId) => {
     });
     cursorY = doc.lastAutoTable.finalY + 14;
 
-
     // Crédito
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
@@ -250,7 +282,6 @@ export const descargarFichaPDFFront = async (creditoId) => {
     const primerVto = vtosValidos[0] || (c.fecha_compromiso_pago || "-");
     const ultimoVto = vtosValidos.length ? vtosValidos[vtosValidos.length - 1] : "-";
     const fechasCiclos = fechasCiclosLibre(c);
-
 
     let creditoRows = [
         ["ID", c.id ?? "-"],
@@ -269,6 +300,7 @@ export const descargarFichaPDFFront = async (creditoId) => {
         ["Fecha de fin de crédito", ultimoVto],
         ["Cobrador", c.cobradorCredito?.nombre_completo || "-"]
     ];
+
     // 🔹 Insertar info de origen y detalle de producto si corresponde
     if (esVentaFinanciada) {
         creditoRows.splice(3, 0, [
@@ -280,7 +312,6 @@ export const descargarFichaPDFFront = async (creditoId) => {
     if (esVentaFinanciada && detalleProductoPDF) {
         creditoRows.push(["Detalle del producto", detalleProductoPDF]);
     }
-
 
     // ── Fechas de vencimiento por ciclo para LIBRE
     if (safeLower(c.modalidad_credito) === "libre") {

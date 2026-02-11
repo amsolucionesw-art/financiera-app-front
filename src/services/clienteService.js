@@ -5,15 +5,13 @@ import { getToken } from './authService';
 
 /**
  * Este service estaba calculando BASE_URL / API_BASE por su cuenta.
- * Eso puede romperse cuando VITE_API_URL ya incluye "/api" (terminás con "/api/api").
+ * Eso puede romperse cuando VITE_API_URL se usa como base sin "/api" (terminás sin prefijo)
+ * o cuando ya incluye "/api" (terminás duplicando).
  *
  * Solución:
  * - Para requests JSON normales: usamos apiFetch (ya resuelve base + /api + headers).
- * - Para descargas/importación (fetch directo): construimos API_URL_BASE con la MISMA lógica que apiClient.
- *
- * Nota:
- * - Se removió la lógica de DNI (subida/visualización) por decisión de producto:
- *   no se muestra ni se utiliza por ahora, pero queda listo para reactivar en el futuro.
+ * - Para descargas/importación (fetch directo): construimos API_URL_BASE con la MISMA lógica que apiClient:
+ *   VITE_API_URL (base) + VITE_API_PREFIX (por defecto "/api"), sin duplicar.
  */
 
 /* ───────────────── Helpers: API base consistente con apiClient ───────────────── */
@@ -26,18 +24,37 @@ const normalizePrefix = (p) => {
     return withSlash.replace(/\/+$/, '');
 };
 
-const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();         // ej: "http://localhost:3000/api" o "/api"
-const API_BASE_ENV = (import.meta.env.VITE_API_BASE || '').trim();       // ej: "http://localhost:3000" o "" (same-origin)
-const API_PREFIX_ENV = normalizePrefix(import.meta.env.VITE_API_PREFIX || '/api');
+const joinBaseAndPrefix = (base, prefix) => {
+    const b = normalizeBase(base);
+    const p = normalizePrefix(prefix);
 
+    if (!p) return b;       // sin prefijo
+    if (!b) return p;       // same-origin
+
+    const bLower = b.toLowerCase();
+    const pLower = p.toLowerCase();
+    if (bLower.endsWith(pLower)) return b; // ya lo tiene
+
+    return `${b}${p}`;
+};
+
+const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();   // ideal: "https://api...cloud" (sin /api)
+const API_BASE_ENV = (import.meta.env.VITE_API_BASE || '').trim(); // opcional: "http://localhost:3000" o "" (same-origin)
+const API_PREFIX_ENV = normalizePrefix(import.meta.env.VITE_API_PREFIX ?? '/api');
+
+// ✅ Base final para fetch directo (blob/form-data): aplica prefix siempre
 const API_URL_BASE =
-    normalizeBase(RAW_API_URL) ||
-    (API_BASE_ENV ? `${normalizeBase(API_BASE_ENV)}${API_PREFIX_ENV}` : API_PREFIX_ENV);
+    (RAW_API_URL
+        ? joinBaseAndPrefix(RAW_API_URL, API_PREFIX_ENV)
+        : (API_BASE_ENV
+            ? joinBaseAndPrefix(API_BASE_ENV, API_PREFIX_ENV)
+            : API_PREFIX_ENV));
 
 /** Para construir URLs a endpoints (incluye /api si corresponde) */
 const apiUrl = (path) => {
     const p = String(path || '');
     const normPath = p.startsWith('/') ? p : `/${p}`;
+    // Evita // internos sin romper "https://"
     return `${API_URL_BASE}${normPath}`.replace(/\/{2,}/g, '/').replace(':/', '://');
 };
 
