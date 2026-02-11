@@ -32,6 +32,9 @@ import {
     calcularTotalActualFront
 } from "../../utils/creditos/creditosHelpers.js";
 
+// ✅ FIX PDF: bajar PDF como blob (NO apiFetch/json)
+import { descargarFichaCreditoPDF } from "../../services/creditoService.js";
+
 const toNumber = (v) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : 0;
@@ -403,11 +406,7 @@ const CreditoCard = ({
 
     const totalActualCard = esLibre
         ? totalPendienteHoy
-        : Number(
-              c.saldo_total_actual ??
-                  c.total_actual ??
-                  calcularTotalActualFront(c)
-          );
+        : Number(c.saldo_total_actual ?? c.total_actual ?? calcularTotalActualFront(c));
 
     // Para tachado si hubo % global (no-libre)
     const totalSinDescuento = tieneDescuento
@@ -429,6 +428,7 @@ const CreditoCard = ({
 
     /* ─────────────────────────────────────────────────────────────
        SweetAlert2 helpers (evita duplicación y agrega confirmaciones)
+       ✅ FIX: no pasar confirmText/cancelText como params desconocidos
     ───────────────────────────────────────────────────────────── */
     const swalBlocked = (title, text) =>
         Swal.fire({
@@ -453,16 +453,18 @@ const CreditoCard = ({
         });
     };
 
-    const swalConfirm = (opts) =>
-        Swal.fire({
+    const swalConfirm = (opts = {}) => {
+        const { confirmText, cancelText, ...rest } = opts || {};
+        return Swal.fire({
             icon: "warning",
             showCancelButton: true,
-            confirmButtonText: opts?.confirmText || "Confirmar",
-            cancelButtonText: opts?.cancelText || "Cancelar",
+            confirmButtonText: confirmText || "Confirmar",
+            cancelButtonText: cancelText || "Cancelar",
             confirmButtonColor: "#4f46e5",
             cancelButtonColor: "#6b7280",
-            ...opts
+            ...rest
         });
+    };
 
     return (
         <article
@@ -706,7 +708,11 @@ const CreditoCard = ({
                                 });
                                 if (!res.isConfirmed) return;
 
-                                await onImprimirFicha?.(c.id);
+                                // ✅ FIX: forzar descarga PDF como blob (evita apiFetch/json => "Unexpected token '<'")
+                                await descargarFichaCreditoPDF(c.id, `ficha-credito-${c.id}.pdf`);
+
+                                // (Opcional) compat: si por algún motivo quieren mantener callback externo
+                                // await onImprimirFicha?.(c.id);
                             } catch (err) {
                                 await swalError(err, "No se pudo descargar la ficha.");
                             }
