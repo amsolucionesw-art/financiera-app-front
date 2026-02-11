@@ -2,16 +2,30 @@
 
 /**
  * ─────────────────────────────────────────────────────────────
- * Config de API
- * 1) Si existe VITE_API_URL -> se usa tal cual (ej: "http://localhost:3000/api")
- * 2) Si no existe, se arma con:
- *    - VITE_API_BASE   (ej: "http://localhost:3000" | "" para same-origin)
- *    - VITE_API_PREFIX (ej: "/api")
- * 3) Fallback final: "/api" (same-origin, ideal para producción con reverse proxy)
+ * Config de API (robusta para producción)
+ *
+ * Objetivo:
+ * - VITE_API_URL se trata como "base" (sin asumir prefijo)
+ * - VITE_API_PREFIX se aplica siempre que exista (por defecto "/api")
+ * - Si VITE_API_URL ya contiene el prefijo, evitamos duplicarlo
+ *
+ * Ejemplos válidos:
+ * 1) VITE_API_URL="https://api.syefinanciera-app.cloud"  VITE_API_PREFIX="/api"
+ *    => base final: https://api.syefinanciera-app.cloud/api
+ *
+ * 2) VITE_API_URL="https://api.syefinanciera-app.cloud/api"  VITE_API_PREFIX="/api"
+ *    => base final: https://api.syefinanciera-app.cloud/api  (sin duplicar)
+ *
+ * 3) Sin VITE_API_URL, con VITE_API_BASE y VITE_API_PREFIX:
+ *    VITE_API_BASE="http://localhost:3000" VITE_API_PREFIX="/api"
+ *    => http://localhost:3000/api
+ *
+ * 4) Fallback final: "/api" (same-origin)
  * ─────────────────────────────────────────────────────────────
  */
 
 const normalizeBase = (url) => (url || '').trim().replace(/\/+$/, '');
+
 const normalizePrefix = (p) => {
     if (p == null) return '/api';
     const s = String(p).trim();
@@ -20,13 +34,42 @@ const normalizePrefix = (p) => {
     return withSlash.replace(/\/+$/, '');
 };
 
+// ¿base absoluta seteada?
 const RAW_API_URL = (import.meta.env.VITE_API_URL || '').trim();
-const API_BASE = (import.meta.env.VITE_API_BASE || '').trim(); // opcional
-const API_PREFIX = normalizePrefix(import.meta.env.VITE_API_PREFIX || '/api');
 
+// Base opcional si no existe VITE_API_URL
+const API_BASE = (import.meta.env.VITE_API_BASE || '').trim();
+
+// Prefijo: por defecto /api
+const API_PREFIX = normalizePrefix(import.meta.env.VITE_API_PREFIX ?? '/api');
+
+/**
+ * Une base + prefix sin duplicar.
+ * - Si base ya termina con prefix, no lo agrega.
+ * - Si prefix es '', devuelve base.
+ */
+const joinBaseAndPrefix = (base, prefix) => {
+    const b = normalizeBase(base);
+    const p = normalizePrefix(prefix);
+
+    if (!p) return b; // sin prefijo
+    if (!b) return p; // same-origin
+
+    // Normalizamos para comparar sin dobles slashes
+    const bLower = b.toLowerCase();
+    const pLower = p.toLowerCase();
+
+    if (bLower.endsWith(pLower)) return b;
+    return `${b}${p}`;
+};
+
+// ✅ Base final de API
 const API_URL =
-    RAW_API_URL ||
-    (API_BASE ? `${normalizeBase(API_BASE)}${API_PREFIX}` : API_PREFIX);
+    (RAW_API_URL
+        ? joinBaseAndPrefix(RAW_API_URL, API_PREFIX)
+        : (API_BASE
+            ? joinBaseAndPrefix(API_BASE, API_PREFIX)
+            : API_PREFIX));
 
 /** Normaliza y une base + path en forma segura */
 const normalizePath = (p) => `/${String(p || '').replace(/^\/+/, '')}`;
