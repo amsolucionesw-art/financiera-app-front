@@ -167,6 +167,21 @@ const getAuthHeader = () => {
   }
 };
 
+/* ───────────────── PDF fetch credentials (CORS) ─────────────────
+   Default: NO cookies. Usamos Bearer token → credentials debe ser 'omit'
+   Si algún día usan cookie/sesión, setear VITE_PDF_CREDENTIALS=true
+*/
+const parseBoolEnv = (v, def = false) => {
+  if (v == null) return def;
+  const s = String(v).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(s)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(s)) return false;
+  return def;
+};
+
+const PDF_CREDENTIALS_INCLUDE = parseBoolEnv(import.meta.env.VITE_PDF_CREDENTIALS, false);
+const PDF_FETCH_CREDENTIALS = PDF_CREDENTIALS_INCLUDE ? 'include' : 'omit';
+
 /* ───────────────── Helpers de refinanciación (front-only, puros) ───────────────── */
 
 /** Tasa mensual según opción seleccionada. */
@@ -1011,7 +1026,8 @@ export const construirFichaHTML = construirHTMLFicha;
 
 /**
  * ✅ FIX CRÍTICO:
- * - Agrega credentials: 'include' (si el backend valida cookie/sesión)
+ * - Por defecto NO manda cookies (credentials: 'omit') porque usamos Bearer token.
+ * - Si algún día el backend valida cookie/sesión, setear VITE_PDF_CREDENTIALS=true.
  * - Si el backend devuelve 401/403/HTML, lo capturamos con mejor diagnóstico
  * - Evita “descargar” HTML/JSON como si fuera PDF
  */
@@ -1038,7 +1054,8 @@ export const descargarFichaCreditoPDF = async (creditoId, filename) => {
     headers: {
       ...getAuthHeader()
     },
-    credentials: 'include'
+    // ✅ DEFAULT: omit (evita bloqueo CORS con Access-Control-Allow-Origin: *)
+    credentials: PDF_FETCH_CREDENTIALS
   });
 
   if (!res.ok) {
@@ -1073,7 +1090,8 @@ export const abrirFichaCreditoPDF = async (creditoId) => {
     headers: {
       ...getAuthHeader()
     },
-    credentials: 'include'
+    // ✅ DEFAULT: omit (evita bloqueo CORS con Access-Control-Allow-Origin: *)
+    credentials: PDF_FETCH_CREDENTIALS
   });
 
   if (!res.ok) {
