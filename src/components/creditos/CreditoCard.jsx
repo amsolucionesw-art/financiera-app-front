@@ -408,6 +408,106 @@ const CreditoCard = ({
         ? totalPendienteHoy
         : Number(c.saldo_total_actual ?? c.total_actual ?? calcularTotalActualFront(c));
 
+    // ─────────────────────────────────────────────────────────────
+    // ✅ NUEVO: Descuento en LIBRE (mora / interés) — solo informativo en card
+    // No asumimos que el back lo envía: soporta aliases comunes.
+    // Si el back NO manda nada, no mostramos el bloque.
+    // ─────────────────────────────────────────────────────────────
+    const descuentoLibreScope = esLibre
+        ? safeLower(
+              resumen?.data?.descuento_scope ??
+                  resumen?.data?.ultimo_descuento_scope ??
+                  resumen?.data?.scope_descuento ??
+                  null
+          )
+        : null;
+
+    const descuentoLibreMoraPct = esLibre
+        ? toNumber(
+              resumen?.data?.descuento_mora ??
+                  resumen?.data?.descuento_mora_pct ??
+                  resumen?.data?.pct_descuento_mora ??
+                  0
+          )
+        : 0;
+
+    const descuentoLibreInteresPct = esLibre
+        ? toNumber(
+              resumen?.data?.descuento_interes ??
+                  resumen?.data?.descuento_interes_pct ??
+                  resumen?.data?.pct_descuento_interes ??
+                  0
+          )
+        : 0;
+
+    const descuentoLibreMoraPesos = esLibre
+        ? toNumber(
+              resumen?.data?.descuento_mora_pesos ??
+                  resumen?.data?.descuento_mora_monto ??
+                  resumen?.data?.monto_descuento_mora ??
+                  0
+          )
+        : 0;
+
+    const descuentoLibreInteresPesos = esLibre
+        ? toNumber(
+              resumen?.data?.descuento_interes_pesos ??
+                  resumen?.data?.descuento_interes_monto ??
+                  resumen?.data?.monto_descuento_interes ??
+                  0
+          )
+        : 0;
+
+    const hayInfoDescuentoLibre =
+        esLibre &&
+        (descuentoLibreScope === "mora" ||
+            descuentoLibreScope === "interes" ||
+            descuentoLibreScope === "total" ||
+            descuentoLibreMoraPct > 0 ||
+            descuentoLibreInteresPct > 0 ||
+            descuentoLibreMoraPesos > 0 ||
+            descuentoLibreInteresPesos > 0);
+
+    const labelDescuentoLibre = (() => {
+        if (!hayInfoDescuentoLibre) return null;
+
+        const parts = [];
+
+        if (descuentoLibreScope === "mora" || (descuentoLibreScope == null && descuentoLibreMoraPct > 0)) {
+            const pct = descuentoLibreMoraPct > 0 ? `${descuentoLibreMoraPct}%` : null;
+            const pesos = descuentoLibreMoraPesos > 0 ? `$${money(descuentoLibreMoraPesos)}` : null;
+            parts.push(`Mora: ${[pct, pesos].filter(Boolean).join(" · ") || "aplicado"}`);
+        }
+
+        if (descuentoLibreScope === "interes" || (descuentoLibreScope == null && descuentoLibreInteresPct > 0)) {
+            const pct = descuentoLibreInteresPct > 0 ? `${descuentoLibreInteresPct}%` : null;
+            const pesos = descuentoLibreInteresPesos > 0 ? `$${money(descuentoLibreInteresPesos)}` : null;
+            parts.push(`Interés: ${[pct, pesos].filter(Boolean).join(" · ") || "aplicado"}`);
+        }
+
+        if (descuentoLibreScope === "total") {
+            // si scope total, mostramos lo que haya
+            const pctM = descuentoLibreMoraPct > 0 ? `mora ${descuentoLibreMoraPct}%` : null;
+            const pctI = descuentoLibreInteresPct > 0 ? `interés ${descuentoLibreInteresPct}%` : null;
+            const pesosM = descuentoLibreMoraPesos > 0 ? `mora $${money(descuentoLibreMoraPesos)}` : null;
+            const pesosI = descuentoLibreInteresPesos > 0 ? `interés $${money(descuentoLibreInteresPesos)}` : null;
+            const detail = [pctM, pctI, pesosM, pesosI].filter(Boolean).join(" · ");
+            parts.push(`Total${detail ? `: ${detail}` : ""}`);
+        }
+
+        // Fallback si el scope vino raro pero hay montos
+        if (parts.length === 0) {
+            const p = [];
+            if (descuentoLibreMoraPct > 0) p.push(`mora ${descuentoLibreMoraPct}%`);
+            if (descuentoLibreInteresPct > 0) p.push(`interés ${descuentoLibreInteresPct}%`);
+            if (descuentoLibreMoraPesos > 0) p.push(`mora $${money(descuentoLibreMoraPesos)}`);
+            if (descuentoLibreInteresPesos > 0) p.push(`interés $${money(descuentoLibreInteresPesos)}`);
+            return p.length ? p.join(" · ") : "Aplicado";
+        }
+
+        return parts.join(" | ");
+    })();
+
     // Para tachado si hubo % global (no-libre)
     const totalSinDescuento = tieneDescuento
         ? Number((((Number(c.monto_total_devolver) || 0) / (1 - Number(c.descuento) / 100))).toFixed(2))
@@ -767,7 +867,10 @@ const CreditoCard = ({
             {/* Aviso claro si está anulado/refinanciado y está abierto */}
             {isOpen && (estadoLower === "anulado" || estadoLower === "refinanciado") && (
                 <div className="mx-4 mb-2 rounded border bg-gray-50 border-gray-200 p-3 text-xs text-gray-800">
-                    <b>Acciones bloqueadas:</b> {estadoLower === "anulado" ? "crédito anulado, no se permiten pagos ni refinanciación." : "crédito refinanciado, los pagos deben hacerse sobre el crédito nuevo."}
+                    <b>Acciones bloqueadas:</b>{" "}
+                    {estadoLower === "anulado"
+                        ? "crédito anulado, no se permiten pagos ni refinanciación."
+                        : "crédito refinanciado, los pagos deben hacerse sobre el crédito nuevo."}
                 </div>
             )}
 
@@ -829,6 +932,17 @@ const CreditoCard = ({
                                     <div className="font-semibold">${money(totalPendienteHoy)}</div>
                                     <div className="mt-0.5 text-[11px] text-gray-500">Capital + Interés total + Mora total</div>
                                 </div>
+
+                                {/* ✅ NUEVO (LIBRE): descuento aplicado, si el back lo informa */}
+                                {hayInfoDescuentoLibre && (
+                                    <div className="sm:col-span-6 rounded bg-white border p-2">
+                                        <div className="text-gray-600">Descuento aplicado</div>
+                                        <div className="font-semibold text-emerald-700">{labelDescuentoLibre}</div>
+                                        <div className="mt-0.5 text-[11px] text-gray-500">
+                                            Referencia informativa (depende de lo que envíe el backend en el resumen).
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         ) : null}
                     </div>
@@ -926,6 +1040,15 @@ const CreditoCard = ({
                                         <dt className="font-medium text-gray-600">Mora total pendiente:</dt>
                                         <dd className="font-mono text-gray-800">${money(moraTotalPendiente)}</dd>
                                     </div>
+
+                                    {/* ✅ NUEVO (LIBRE): muestra descuento aplicado si hay data */}
+                                    {hayInfoDescuentoLibre && (
+                                        <div className="flex flex-wrap items-center gap-2" title="Descuento aplicado en la última liquidación / cálculo (según resumen del backend).">
+                                            <Percent size={16} className="text-emerald-600" />
+                                            <dt className="font-medium text-gray-600">Descuento:</dt>
+                                            <dd className="text-emerald-700 font-semibold">{labelDescuentoLibre}</dd>
+                                        </div>
+                                    )}
                                 </>
                             )}
 

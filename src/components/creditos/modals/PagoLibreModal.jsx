@@ -5,29 +5,14 @@ import { jwtDecode } from "jwt-decode";
 import Swal from "sweetalert2";
 
 import { obtenerRecibosPorCredito } from "../../../services/reciboService";
-import {
-    registrarPagoParcial,
-    pagarCuota,
-    obtenerFormasDePago
-} from "../../../services/cuotaService";
+import { registrarPagoParcial, pagarCuota, obtenerFormasDePago } from "../../../services/cuotaService";
 
-import {
-    obtenerResumenLibreNormalizado,
-    invalidarResumenLibreCache
-} from "../../../services/creditoService";
+import { obtenerResumenLibreNormalizado, invalidarResumenLibreCache } from "../../../services/creditoService";
 
 import { money, cicloActualDesde, safeLower } from "../../../utils/creditos/creditosHelpers.js";
 
 /* ───────────────── Modal de Pago para Créditos LIBRE ───────────────── */
-const PagoLibreModal = ({
-    open,
-    onClose,
-    credito,
-    cuotaLibreId,
-    modoInicial = "parcial",
-    onSuccess,
-    resumenLibre
-}) => {
+const PagoLibreModal = ({ open, onClose, credito, cuotaLibreId, modoInicial = "parcial", onSuccess, resumenLibre }) => {
     const navigate = useNavigate();
 
     // Permisos (desde token)
@@ -38,7 +23,12 @@ const PagoLibreModal = ({
     const esSuperAdmin = rol_id === 0;
     const esAdmin = rol_id === 1;
     const puedeImpactarPagos = esSuperAdmin || esAdmin; // solo superadmin/admin
-    const puedeDescontar = esSuperAdmin; // descuentos solo superadmin
+
+    // ✅ Descuentos (alineado al BACK):
+    // - Admin: SÍ (solo mora)
+    // - Superadmin: SÍ (mora e interés)
+    const puedeDescontarMora = esSuperAdmin || esAdmin;
+    const puedeDescontarInteres = esSuperAdmin;
 
     const [modo, setModo] = useState(modoInicial); // 'parcial' | 'total'
     const [formas, setFormas] = useState([]);
@@ -46,7 +36,11 @@ const PagoLibreModal = ({
 
     const [formaPagoId, setFormaPagoId] = useState("");
     const [monto, setMonto] = useState(""); // solo en parcial
-    const [descuento, setDescuento] = useState(""); // % solo en total
+
+    // ✅ descuentos % (aplican en PARCIAL y TOTAL)
+    const [descuentoMoraPct, setDescuentoMoraPct] = useState(""); // % sobre mora
+    const [descuentoInteresPct, setDescuentoInteresPct] = useState(""); // % sobre interés
+
     const [observacion, setObservacion] = useState("");
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState(null);
@@ -58,6 +52,43 @@ const PagoLibreModal = ({
     const toNumber = (v) => {
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
+    };
+
+    const toPct = (raw) => {
+        const n = Number(String(raw ?? "").replace(",", "."));
+        if (!Number.isFinite(n)) return 0;
+        return Math.min(100, Math.max(0, n));
+    };
+
+    const buildScope = (pctM, pctI) => {
+        const m = Number(pctM) > 0;
+        const i = Number(pctI) > 0;
+        if (m && i) return "total";
+        if (i) return "interes";
+        if (m) return "mora";
+        return "mora";
+    };
+
+    // ✅ Normaliza payload para onSuccess (InfoCreditos soporta varios formatos)
+    const buildOnSuccessPayload = ({ resp, creditoId }) => {
+        const raw = resp?.data ?? resp ?? null;
+        const credito_ui = raw?.credito_ui ?? raw?.credito ?? null;
+        const resumen_libre = raw?.resumen_libre ?? raw?.resumenLibre ?? null;
+
+        if (credito_ui || resumen_libre) {
+            return {
+                creditoId: creditoId ?? credito_ui?.id ?? null,
+                credito_ui,
+                resumen_libre,
+                recibo: raw?.recibo ?? null,
+                numero_recibo:
+                    raw?.numero_recibo ??
+                    raw?.recibo?.numero_recibo ??
+                    null
+            };
+        }
+
+        return creditoId ?? null;
     };
 
     // ✅ Estado y bloqueos por estado (alineado al back)
@@ -84,17 +115,13 @@ const PagoLibreModal = ({
         const raw = resumenVigente?.ciclo_actual ?? resumenVigente?.ciclo ?? null;
 
         const fallback = () => {
-            // Usar la firma nueva si tenemos objeto crédito (para LIBRE toma calendario por compromiso)
             if (credito && typeof credito === "object") return cicloActualDesde(credito);
-
-            // Último fallback: firma vieja (días) si no hay objeto
             return cicloActualDesde(anchorLibre, credito?.tipo_credito);
         };
 
         if (raw === null || raw === undefined) return fallback();
 
         if (typeof raw === "string") {
-            // "2/3" -> 2
             const s = raw.trim();
             const first = s.includes("/") ? s.split("/")[0] : s;
             const n = Number(first);
@@ -113,7 +140,6 @@ const PagoLibreModal = ({
     // HOY (ciclo actual) — informativo
     const interesHoy = toNumber(
         resumenVigente?.interes_ciclo_hoy ??
-            // compat back viejo
             resumenVigente?.interes_pendiente_hoy ??
             resumenVigente?.interes_hoy ??
             0
@@ -121,7 +147,6 @@ const PagoLibreModal = ({
 
     const moraHoy = toNumber(
         resumenVigente?.mora_ciclo_hoy ??
-            // compat back viejo
             resumenVigente?.mora_pendiente_hoy ??
             resumenVigente?.mora_hoy ??
             0
@@ -132,7 +157,6 @@ const PagoLibreModal = ({
         resumenVigente?.interes_pendiente_total ??
             resumenVigente?.interes_total ??
             resumenVigente?.interes_pendiente ??
-            // guardarraíl: si no viene total pero viene HOY
             interesHoy ??
             0
     );
@@ -141,7 +165,6 @@ const PagoLibreModal = ({
         resumenVigente?.mora_pendiente_total ??
             resumenVigente?.mora_total ??
             resumenVigente?.mora_pendiente ??
-            // guardarraíl: si no viene total pero viene HOY
             moraHoy ??
             0
     );
@@ -149,19 +172,19 @@ const PagoLibreModal = ({
     // ✅ Total de liquidación: TOTAL ACTUAL (capital + interes_total + mora_total)
     const totalLiquidacionHoy = toNumber(
         resumenVigente?.total_actual ??
-            // compat back histórico
             resumenVigente?.total_liquidacion_hoy ??
-            // fallback: capital + TOTALES (no HOY)
-            capitalHoy + interesTotalPendiente + moraTotalPendiente
+            (capitalHoy + interesTotalPendiente + moraTotalPendiente)
     );
 
-    // === Preview dinámico de descuento sobre mora (solo modo "total") ===
-    const descuentoRaw = Number(String(descuento).replace(",", ".")) || 0;
-    const descuentoPct = puedeDescontar ? Math.min(100, Math.max(0, descuentoRaw)) : 0;
+    // === Preview dinámico de descuentos (TOTAL y también PARCIAL para que el user vea qué está seteando) ===
+    const pctMora = puedeDescontarMora ? toPct(descuentoMoraPct) : 0;
+    const pctInteres = puedeDescontarInteres ? toPct(descuentoInteresPct) : 0;
 
-    // ✅ Descuento sobre MORA TOTAL pendiente (coherente con backend)
-    const descuentoMoraPesos = (moraTotalPendiente * descuentoPct) / 100;
-    const totalConDescuento = Math.max(0, totalLiquidacionHoy - descuentoMoraPesos);
+    // ✅ Descuento sobre MORA e INTERÉS TOTALES pendientes (preview)
+    const descuentoMoraPesos = (moraTotalPendiente * pctMora) / 100;
+    const descuentoInteresPesos = (interesTotalPendiente * pctInteres) / 100;
+
+    const totalConDescuento = Math.max(0, totalLiquidacionHoy - descuentoMoraPesos - descuentoInteresPesos);
 
     // ── Helpers de navegación/recibo (locales al modal)
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -231,12 +254,7 @@ const PagoLibreModal = ({
 
     // ✅ Normalizador de errores de API (axios/fetch) + mensajes de negocio
     const normalizarErrorPago = (e) => {
-        const status =
-            e?.status ??
-            e?.response?.status ??
-            e?.response?.data?.status ??
-            e?.data?.status ??
-            null;
+        const status = e?.status ?? e?.response?.status ?? e?.response?.data?.status ?? e?.data?.status ?? null;
 
         const msg =
             e?.response?.data?.message ??
@@ -245,7 +263,6 @@ const PagoLibreModal = ({
             e?.message ??
             "No se pudo registrar el pago.";
 
-        // Casos típicos de validación negocio
         if (status === 409) {
             return msg || "Operación no permitida por estado del crédito.";
         }
@@ -253,7 +270,6 @@ const PagoLibreModal = ({
             return "No tenés permisos para realizar esta acción.";
         }
 
-        // Heurística por texto (por si el servicio no preserva status)
         const m = String(msg || "").toLowerCase();
         if (m.includes("anulad")) return "Crédito anulado: no se permiten pagos.";
         if (m.includes("refinanci")) return "Crédito refinanciado: los pagos deben hacerse sobre el crédito nuevo.";
@@ -292,7 +308,6 @@ const PagoLibreModal = ({
             setResumenLocal(data);
             return data;
         } catch (e) {
-            // No bloqueamos el modal por esto, pero lo registramos.
             console.error("[PagoLibreModal] No se pudo refrescar resumen libre", e);
             return null;
         } finally {
@@ -303,10 +318,7 @@ const PagoLibreModal = ({
     useEffect(() => {
         if (!open) return;
 
-        // Sincroniza el resumen local inicial (por si el padre lo trae)
         setResumenLocal(resumenLibre ?? null);
-
-        // ✅ Y además forzamos resumen fresco al abrir
         refreshResumenForce().catch(() => {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, credito?.id]);
@@ -323,11 +335,11 @@ const PagoLibreModal = ({
 
     useEffect(() => {
         if (open) {
-            // Si está bloqueado por estado, forzamos total por UI (pero igual deshabilitamos submit).
             setModo(parcialBloqueado ? "total" : modoInicial);
             setFormaPagoId("");
             setMonto("");
-            setDescuento("");
+            setDescuentoMoraPct("");
+            setDescuentoInteresPct("");
             setObservacion("");
             setError(null);
             setSaving(false);
@@ -338,7 +350,7 @@ const PagoLibreModal = ({
     const handleSubmit = async (e) => {
         e.preventDefault();
 
-        if (saving) return; // anti doble-submit
+        if (saving) return;
 
         if (bloqueadoPorEstado) {
             const msg = motivoBloqueo || "Operación no permitida por estado del crédito.";
@@ -365,28 +377,19 @@ const PagoLibreModal = ({
             setSaving(true);
             setError(null);
 
-            // ✅ CRÍTICO: antes de calcular y enviar, traemos resumen fresco
+            // ✅ CRÍTICO: resumen fresco
             const resumenFresh = (await refreshResumenForce()) || resumenVigente;
 
-            // Recalcular valores clave con el resumen fresco (evita usar snapshot viejo)
             const cap = toNumber(resumenFresh?.saldo_capital ?? credito?.saldo_actual ?? 0);
 
-            // HOY (informativo)
             const intHoy = toNumber(
-                resumenFresh?.interes_ciclo_hoy ??
-                    resumenFresh?.interes_pendiente_hoy ??
-                    resumenFresh?.interes_hoy ??
-                    0
+                resumenFresh?.interes_ciclo_hoy ?? resumenFresh?.interes_pendiente_hoy ?? resumenFresh?.interes_hoy ?? 0
             );
 
             const morHoy = toNumber(
-                resumenFresh?.mora_ciclo_hoy ??
-                    resumenFresh?.mora_pendiente_hoy ??
-                    resumenFresh?.mora_hoy ??
-                    0
+                resumenFresh?.mora_ciclo_hoy ?? resumenFresh?.mora_pendiente_hoy ?? resumenFresh?.mora_hoy ?? 0
             );
 
-            // TOTALES (para liquidación real)
             const intTotal = toNumber(
                 resumenFresh?.interes_pendiente_total ??
                     resumenFresh?.interes_total ??
@@ -404,9 +407,7 @@ const PagoLibreModal = ({
             );
 
             const totalLiq = toNumber(
-                resumenFresh?.total_actual ??
-                    resumenFresh?.total_liquidacion_hoy ??
-                    (cap + intTotal + morTotal)
+                resumenFresh?.total_actual ?? resumenFresh?.total_liquidacion_hoy ?? (cap + intTotal + morTotal)
             );
 
             let resp = null;
@@ -427,15 +428,35 @@ const PagoLibreModal = ({
                     return;
                 }
 
-                const formaNombre =
-                    (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
+                // ✅ Descuentos en PARCIAL (MORA siempre; INTERÉS solo superadmin)
+                const pctM = puedeDescontarMora ? toPct(descuentoMoraPct) : 0;
+                const pctI = puedeDescontarInteres ? toPct(descuentoInteresPct) : 0;
+
+                if (pctM < 0 || pctM > 100 || pctI < 0 || pctI > 100) {
+                    const msg = "Los descuentos deben ser porcentajes entre 0 y 100.";
+                    setError(msg);
+                    await swalWarn("Descuento inválido", msg);
+                    return;
+                }
+
+                const scope = buildScope(pctM, pctI);
+
+                const formaNombre = (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
+
+                const descTxt =
+                    pctM > 0 || pctI > 0
+                        ? `<p style="margin-top:6px;font-size:12px;color:#555;">
+                              Descuento: mora <b>${pctM}%</b>${puedeDescontarInteres ? ` / interés <b>${pctI}%</b>` : ""}
+                           </p>`
+                        : "";
 
                 const result = await Swal.fire({
                     title: "Confirmar pago",
-                    html: `<p style="margin-bottom:6px;">Abono parcial de <b>$${money(
-                        montoNum
-                    )}</b> sobre el crédito LIBRE <b>#${credito?.id}</b>.</p>
-                          <p style="font-size:12px;color:#555;">Forma de pago: ${formaNombre}</p>`,
+                    html: `<p style="margin-bottom:6px;">Abono parcial de <b>$${money(montoNum)}</b> sobre el crédito LIBRE <b>#${
+                        credito?.id
+                    }</b>.</p>
+                          <p style="font-size:12px;color:#555;">Forma de pago: ${formaNombre}</p>
+                          ${descTxt}`,
                     icon: "question",
                     showCancelButton: true,
                     confirmButtonText: "Sí, confirmar",
@@ -445,39 +466,53 @@ const PagoLibreModal = ({
 
                 if (!result.isConfirmed) return;
 
-                // ✅ Compat: mandamos monto_pagado + monto por si el back espera alias
                 resp = await registrarPagoParcial({
                     cuota_id: cuotaLibreId,
                     monto_pagado: montoNum,
                     monto: montoNum,
                     forma_pago_id: Number(formaPagoId),
-                    observacion: observacion || null
+                    observacion: observacion || null,
+
+                    // ✅ NUEVO: alineado al backend (descuentos)
+                    descuento_scope: scope,
+                    descuento_mora: pctM,
+                    descuento_interes: pctI,
+
+                    // compat: back viejo usa "descuento"
+                    descuento: pctM
                 });
             } else {
                 // ───────────────────────────────────────────────
                 // Modo TOTAL: liquidación (siempre)
                 // ───────────────────────────────────────────────
 
-                const descBase = descuento === "" ? 0 : Number(String(descuento).replace(",", ".")) || 0;
-                const desc = puedeDescontar ? descBase : 0;
+                const pctM = puedeDescontarMora ? toPct(descuentoMoraPct) : 0;
+                const pctI = puedeDescontarInteres ? toPct(descuentoInteresPct) : 0;
 
-                if (puedeDescontar && (desc < 0 || desc > 100)) {
-                    const msg = "El descuento debe ser un porcentaje entre 0 y 100.";
+                if (pctM < 0 || pctM > 100 || pctI < 0 || pctI > 100) {
+                    const msg = "Los descuentos deben ser porcentajes entre 0 y 100.";
                     setError(msg);
                     await swalWarn("Descuento inválido", msg);
                     return;
                 }
 
-                // ✅ Validación sobre MORA TOTAL
-                if (puedeDescontar && morTotal <= 0 && desc > 0) {
+                if (puedeDescontarMora && morTotal <= 0 && pctM > 0) {
                     const msg = "No hay mora generada para aplicar descuento.";
                     setError(msg);
                     await swalWarn("Descuento no aplicable", msg);
                     return;
                 }
 
-                const descuentoPesos = (morTotal * desc) / 100;
-                const totalConDesc = Math.max(0, totalLiq - descuentoPesos);
+                if (puedeDescontarInteres && intTotal <= 0 && pctI > 0) {
+                    const msg = "No hay interés pendiente para aplicar descuento.";
+                    setError(msg);
+                    await swalWarn("Descuento no aplicable", msg);
+                    return;
+                }
+
+                const descMora$ = (morTotal * pctM) / 100;
+                const descInteres$ = (intTotal * pctI) / 100;
+                const totalConDesc = Math.max(0, totalLiq - descMora$ - descInteres$);
 
                 if (!(totalConDesc > 0)) {
                     const msg = "El total a pagar es inválido.";
@@ -486,15 +521,17 @@ const PagoLibreModal = ({
                     return;
                 }
 
-                const formaNombre =
-                    (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
+                const formaNombre = (formas.find((f) => String(f.id) === String(formaPagoId)) || {}).nombre || "";
+
+                const scope = buildScope(pctM, pctI);
 
                 const result = await Swal.fire({
                     title: "Confirmar liquidación",
                     html: `<div style="font-size:13px;text-align:left;line-height:1.35;">
                             <div>Crédito LIBRE <b>#${credito?.id}</b></div>
                             <div style="margin-top:6px;">Total liquidación (hoy): <b>$${money(totalLiq)}</b></div>
-                            <div>Descuento sobre mora total: <b>${desc}%</b> ($${money(descuentoPesos)})</div>
+                            <div>Descuento mora total: <b>${pctM}%</b> ($${money(descMora$)})</div>
+                            <div>Descuento interés total: <b>${pctI}%</b> ($${money(descInteres$)})</div>
                             <div style="margin-top:6px;">Total a pagar: <b>$${money(totalConDesc)}</b></div>
                             <div style="margin-top:10px;font-size:12px;color:#555;">Forma de pago: ${formaNombre}</div>
                            </div>`,
@@ -507,7 +544,7 @@ const PagoLibreModal = ({
 
                 if (!result.isConfirmed) return;
 
-                // ✅ Compat: mandamos monto_pagado + monto por si el back espera alias
+                // ✅ Enviamos campos NUEVOS alineados al backend
                 resp = await pagarCuota({
                     cuotaId: cuotaLibreId,
                     forma_pago_id: Number(formaPagoId),
@@ -516,29 +553,26 @@ const PagoLibreModal = ({
                     monto_pagado: totalConDesc,
                     monto: totalConDesc,
 
-                    descuento_scope: "mora",
-                    descuento_mora: desc,
+                    descuento_scope: scope,
+                    descuento_mora: pctM,
+                    descuento_interes: pctI,
 
                     // compat: algunos back viejos usan "descuento" a secas
-                    descuento: desc
+                    descuento: pctM
                 });
             }
 
             const creditoId = credito?.id ?? null;
 
-            // ✅ Invalidamos cache local SIEMPRE después del pago
             if (creditoId) invalidarResumenLibreCache(creditoId);
 
-            // Detectar número de recibo (directo o con polling)
             let numero = numeroDesdeResponse(resp);
 
-            // Pequeña espera para dejar que DB/commit quede consistente antes de leer recibos
             if (!numero && creditoId) {
                 await sleep(250);
                 numero = await buscarUltimoReciboConPolling(creditoId, 5, 800);
             }
 
-            // ✅ Feedback de éxito (faltaba)
             const tituloOk = modo === "parcial" ? "Pago registrado" : "Liquidación registrada";
             const textoOk = numero
                 ? `Operación confirmada. Recibo #${numero}.`
@@ -551,9 +585,9 @@ const PagoLibreModal = ({
                 confirmButtonText: numero ? "Ver recibo" : "Continuar"
             });
 
-            // ✅ Primero refrescamos en el padre (de verdad), luego navegamos al recibo
+            // ✅ Enviar payload completo al padre para actualizar UI sin esperar refetch
             if (onSuccess) {
-                await Promise.resolve(onSuccess(creditoId));
+                await Promise.resolve(onSuccess(buildOnSuccessPayload({ resp, creditoId })));
             }
 
             if (numero) {
@@ -561,13 +595,11 @@ const PagoLibreModal = ({
                 return;
             }
 
-            // Si no hay recibo detectable, cerramos el modal para evitar “estado colgado”
             onClose?.();
         } catch (e) {
             const msg = normalizarErrorPago(e);
             setError(msg);
 
-            // Antes sólo mostraba Swal en 409; ahora siempre, con severidad según status
             const status = e?.status ?? e?.response?.status ?? null;
 
             if (status === 409 || status === 403) {
@@ -593,7 +625,6 @@ const PagoLibreModal = ({
         onClose?.();
     };
 
-    // Usuarios sin permiso para impactar pagos no ven el modal
     if (!puedeImpactarPagos) return null;
     if (!open) return null;
 
@@ -650,20 +681,31 @@ const PagoLibreModal = ({
                                 <span className="font-semibold">${money(totalLiquidacionHoy)}</span>
                             </div>
 
-                            {modo === "total" && (
+                            {/* ✅ Mostrar preview de descuento también en parcial si hay valores cargados */}
+                            {(modo === "total" || (modo === "parcial" && (pctMora > 0 || pctInteres > 0))) && (
                                 <>
                                     <div>
-                                        <span className="font-medium">Descuento aplicado sobre mora total:</span>{" "}
-                                        {descuentoPct > 0 ? (
+                                        <span className="font-medium">Desc. mora:</span>{" "}
+                                        {pctMora > 0 ? (
                                             <>
-                                                {descuentoPct}% → ${money(descuentoMoraPesos)}
+                                                {pctMora}% → ${money(descuentoMoraPesos)}
                                             </>
                                         ) : (
                                             "Sin descuento"
                                         )}
                                     </div>
                                     <div>
-                                        <span className="font-medium">Total a pagar con descuento:</span>{" "}
+                                        <span className="font-medium">Desc. interés:</span>{" "}
+                                        {pctInteres > 0 ? (
+                                            <>
+                                                {pctInteres}% → ${money(descuentoInteresPesos)}
+                                            </>
+                                        ) : (
+                                            "Sin descuento"
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="font-medium">Total a pagar con descuentos:</span>{" "}
                                         <span className="font-semibold">${money(totalConDescuento)}</span>
                                     </div>
                                 </>
@@ -686,8 +728,10 @@ const PagoLibreModal = ({
                                 disabled={parcialBloqueado || bloqueadoPorEstado}
                                 title={
                                     bloqueadoPorEstado
-                                        ? (motivoBloqueo || "Acción no disponible")
-                                        : (parcialBloqueado ? "En el 3er mes no se permite abono parcial" : "Abono parcial")
+                                        ? motivoBloqueo || "Acción no disponible"
+                                        : parcialBloqueado
+                                        ? "En el 3er mes no se permite abono parcial"
+                                        : "Abono parcial"
                                 }
                             >
                                 Parcial
@@ -698,7 +742,7 @@ const PagoLibreModal = ({
                                 }`}
                                 onClick={() => setModo("total")}
                                 disabled={bloqueadoPorEstado}
-                                title={bloqueadoPorEstado ? (motivoBloqueo || "Acción no disponible") : "Pago total"}
+                                title={bloqueadoPorEstado ? motivoBloqueo || "Acción no disponible" : "Pago total"}
                             >
                                 Total
                             </button>
@@ -706,8 +750,8 @@ const PagoLibreModal = ({
                     </div>
 
                     <div className="rounded-lg border p-3 bg-gray-50 text-xs text-gray-700">
-                        <b>LIBRE:</b> sin vencimientos fijos. El interés es por ciclo sobre el capital y la <b>mora</b> se calcula
-                        al <b>2,5% diario del interés del ciclo</b>. Máximo 3 meses; en el 3er mes no se permiten abonos parciales.
+                        <b>LIBRE:</b> sin vencimientos fijos. El interés es por ciclo sobre el capital y la <b>mora</b> se calcula al{" "}
+                        <b>2,5% diario del interés del ciclo</b>. Máximo 3 meses; en el 3er mes no se permiten abonos parciales.
                     </div>
 
                     {parcialBloqueado && (
@@ -719,43 +763,116 @@ const PagoLibreModal = ({
                     <form onSubmit={handleSubmit} className="space-y-3">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             {modo === "parcial" ? (
-                                <label className="text-sm">
-                                    <span className="block text-gray-600 mb-1">Monto a abonar</span>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        className="w-full rounded-md border px-3 py-2"
-                                        value={monto}
-                                        onChange={(e) => setMonto(e.target.value)}
-                                        placeholder="0,00"
-                                        required
-                                        disabled={disabledAll || parcialBloqueado}
-                                    />
-                                </label>
-                            ) : puedeDescontar ? (
-                                <label className="text-sm">
-                                    <span className="block text-gray-600 mb-1">Descuento (%)</span>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        max="100"
-                                        className="w-full rounded-md border px-3 py-2"
-                                        value={descuento}
-                                        onChange={(e) => setDescuento(e.target.value)}
-                                        placeholder="0"
-                                        disabled={disabledAll}
-                                    />
-                                </label>
+                                <>
+                                    <label className="text-sm">
+                                        <span className="block text-gray-600 mb-1">Monto a abonar</span>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            className="w-full rounded-md border px-3 py-2"
+                                            value={monto}
+                                            onChange={(e) => setMonto(e.target.value)}
+                                            placeholder="0,00"
+                                            required
+                                            disabled={disabledAll || parcialBloqueado}
+                                        />
+                                    </label>
+
+                                    {/* ✅ Descuentos en PARCIAL */}
+                                    {puedeDescontarMora || puedeDescontarInteres ? (
+                                        <>
+                                            <label className="text-sm">
+                                                <span className="block text-gray-600 mb-1">Desc. mora (%)</span>
+                                                <input
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    max="100"
+                                                    className="w-full rounded-md border px-3 py-2"
+                                                    value={descuentoMoraPct}
+                                                    onChange={(e) => setDescuentoMoraPct(e.target.value)}
+                                                    placeholder="0"
+                                                    disabled={disabledAll || !puedeDescontarMora}
+                                                />
+                                            </label>
+
+                                            {puedeDescontarInteres ? (
+                                                <label className="text-sm">
+                                                    <span className="block text-gray-600 mb-1">Desc. interés (%)</span>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        max="100"
+                                                        className="w-full rounded-md border px-3 py-2"
+                                                        value={descuentoInteresPct}
+                                                        onChange={(e) => setDescuentoInteresPct(e.target.value)}
+                                                        placeholder="0"
+                                                        disabled={disabledAll}
+                                                    />
+                                                </label>
+                                            ) : (
+                                                <div className="text-xs text-gray-600 self-end">
+                                                    <span className="block font-medium mb-1">Desc. interés</span>
+                                                    <span>0% (solo superadmin)</span>
+                                                </div>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="text-xs text-gray-600 self-end sm:col-span-2">
+                                            <span className="block font-medium mb-1">Descuentos</span>
+                                            <span>0% (no tenés permisos para aplicar descuentos).</span>
+                                        </div>
+                                    )}
+                                </>
+                            ) : puedeDescontarMora || puedeDescontarInteres ? (
+                                <>
+                                    <label className="text-sm">
+                                        <span className="block text-gray-600 mb-1">Desc. mora (%)</span>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            min="0"
+                                            max="100"
+                                            className="w-full rounded-md border px-3 py-2"
+                                            value={descuentoMoraPct}
+                                            onChange={(e) => setDescuentoMoraPct(e.target.value)}
+                                            placeholder="0"
+                                            disabled={disabledAll || !puedeDescontarMora}
+                                        />
+                                    </label>
+
+                                    {puedeDescontarInteres ? (
+                                        <label className="text-sm">
+                                            <span className="block text-gray-600 mb-1">Desc. interés (%)</span>
+                                            <input
+                                                type="number"
+                                                step="0.01"
+                                                min="0"
+                                                max="100"
+                                                className="w-full rounded-md border px-3 py-2"
+                                                value={descuentoInteresPct}
+                                                onChange={(e) => setDescuentoInteresPct(e.target.value)}
+                                                placeholder="0"
+                                                disabled={disabledAll}
+                                            />
+                                        </label>
+                                    ) : (
+                                        <div className="text-xs text-gray-600 self-end">
+                                            <span className="block font-medium mb-1">Desc. interés</span>
+                                            <span>0% (solo superadmin)</span>
+                                        </div>
+                                    )}
+                                </>
                             ) : (
-                                <div className="text-xs text-gray-600 self-end">
-                                    <span className="block font-medium mb-1">Descuento (%)</span>
-                                    <span>0% (solo el superadmin puede aplicar descuentos sobre mora).</span>
+                                <div className="text-xs text-gray-600 self-end sm:col-span-2">
+                                    <span className="block font-medium mb-1">Descuentos</span>
+                                    <span>0% (no tenés permisos para aplicar descuentos).</span>
                                 </div>
                             )}
 
-                            <label className="text-sm">
+                            <label className={`text-sm ${(modo === "total" && (puedeDescontarMora || puedeDescontarInteres)) ? "sm:col-span-2" : ""}`}>
                                 <span className="block text-gray-600 mb-1">Forma de pago</span>
                                 <select
                                     className="w-full rounded-md border px-3 py-2 bg-white"
@@ -803,8 +920,10 @@ const PagoLibreModal = ({
                                 disabled={disabledAll || (modo === "parcial" && parcialBloqueado)}
                                 title={
                                     bloqueadoPorEstado
-                                        ? (motivoBloqueo || "Acción no disponible")
-                                        : (modo === "parcial" && parcialBloqueado ? "En el 3er mes no se permite abono parcial" : "")
+                                        ? motivoBloqueo || "Acción no disponible"
+                                        : modo === "parcial" && parcialBloqueado
+                                        ? "En el 3er mes no se permite abono parcial"
+                                        : ""
                                 }
                             >
                                 {saving ? "Procesando…" : modo === "parcial" ? "Registrar abono" : "Liquidar crédito"}

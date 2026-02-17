@@ -221,8 +221,9 @@ export const registrarPagoParcial = ({
     descuento = 0,
 
     // compat / backend nuevo
-    descuento_scope = null, // 'mora' | 'total'
+    descuento_scope = null, // 'mora' | 'total' | 'interes'
     descuento_mora = null,  // puede ser % (LIBRE) o monto (NO-LIBRE)
+    descuento_interes = null, // ✅ NUEVO: % (LIBRE)
     modo, // legacy si lo usaban
 }) =>
     apiFetchSafe(
@@ -238,6 +239,7 @@ export const registrarPagoParcial = ({
 
                 ...(descuento_scope != null ? { descuento_scope: String(descuento_scope).toLowerCase() } : {}),
                 ...(descuento_mora != null ? { descuento_mora: sanitizeNumber(descuento_mora) } : {}),
+                ...(descuento_interes != null ? { descuento_interes: sanitizeNumber(descuento_interes) } : {}),
 
                 ...(modo ? { modo } : {}),
             },
@@ -251,7 +253,7 @@ export const registrarPagoParcial = ({
  * ✅ BACK REAL: POST /pagos/total
  *
  * Campos compat:
- * - descuento_scope / descuento_mora (LIBRE)
+ * - descuento_scope / descuento_mora / descuento_interes (LIBRE)
  * - ciclo_libre (LIBRE: pagar ciclo viejo explícito)
  * - monto_pagado (LIBRE: permitir pagar un monto específico en "total")
  * - descuento_sobre / descuento_porcentaje (otros flujos legacy, si existieran)
@@ -263,8 +265,9 @@ export const registrarPagoTotal = async ({
     descuento = 0,
 
     // LIBRE (backend nuevo)
-    descuento_scope = null, // 'mora' | 'total'
+    descuento_scope = null, // 'mora' | 'interes' | 'total'
     descuento_mora = null,  // % sobre mora (LIBRE)
+    descuento_interes = null, // ✅ NUEVO: % sobre interés (LIBRE)
     ciclo_libre = null,
     monto_pagado = null,
 
@@ -282,6 +285,7 @@ export const registrarPagoTotal = async ({
 
         ...(descuento_scope != null ? { descuento_scope: String(descuento_scope).toLowerCase() } : {}),
         ...(descuento_mora != null ? { descuento_mora: sanitizeNumber(descuento_mora) } : {}),
+        ...(descuento_interes != null ? { descuento_interes: sanitizeNumber(descuento_interes) } : {}),
 
         ...(ciclo_libre != null ? { ciclo_libre: sanitizeNumber(ciclo_libre) } : {}),
         ...(monto_pagado != null ? { monto_pagado: sanitizeNumber(monto_pagado) } : {}),
@@ -309,7 +313,7 @@ export const registrarPagoTotal = async ({
  * - forma_pago_id o formaId
  *
  * + Props extra para LIBRE:
- * - descuento_scope / descuento_mora / ciclo_libre / monto_pagado
+ * - descuento_scope / descuento_mora / descuento_interes / ciclo_libre / monto_pagado
  */
 export const pagarCuota = ({
     cuotaId,
@@ -322,6 +326,7 @@ export const pagarCuota = ({
     // LIBRE (nuevo)
     descuento_scope = null,
     descuento_mora = null,
+    descuento_interes = null, // ✅ NUEVO
     ciclo_libre = null,
     monto_pagado = null,
 
@@ -340,6 +345,7 @@ export const pagarCuota = ({
 
         descuento_scope,
         descuento_mora,
+        descuento_interes,
         ciclo_libre,
 
         // ✅ Si mandan "monto" desde UI, lo convertimos a monto_pagado
