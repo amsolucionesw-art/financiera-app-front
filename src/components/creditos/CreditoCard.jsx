@@ -166,8 +166,8 @@ const CreditoCard = ({
     // 🔹 Marca si viene de una venta financiada + detalle del producto
     const esVentaFinanciada = Boolean(
         c.origen_venta_manual_financiada ||
-            c.venta_manual_id ||
-            (c.ventaOrigen && (c.ventaOrigen.id || c.ventaOrigen.venta_manual_id))
+        c.venta_manual_id ||
+        (c.ventaOrigen && (c.ventaOrigen.id || c.ventaOrigen.venta_manual_id))
     );
 
     const detalleProducto =
@@ -181,8 +181,8 @@ const CreditoCard = ({
     // Tasa base visible:
     const tasaVisible =
         c.tasa_refinanciacion !== null &&
-        c.tasa_refinanciacion !== undefined &&
-        c.tasa_refinanciacion !== ""
+            c.tasa_refinanciacion !== undefined &&
+            c.tasa_refinanciacion !== ""
             ? Number(c.tasa_refinanciacion)
             : Number(c.interes);
 
@@ -239,8 +239,8 @@ const CreditoCard = ({
     // La fuente correcta para el capital pendiente es saldo_actual / resumenLibre.saldo_capital.
     const cuotaLibre = esLibre
         ? (c.cuotas || []).find((q) => String(q.fecha_vencimiento) === String(LIBRE_VTO_FICTICIO)) ||
-          (c.cuotas || []).find((q) => Number(q.numero_cuota) === 1) ||
-          (c.cuotas || [])[0]
+        (c.cuotas || []).find((q) => Number(q.numero_cuota) === 1) ||
+        (c.cuotas || [])[0]
         : null;
 
     // ─────────────────────────────────────────────────────────────
@@ -321,10 +321,10 @@ const CreditoCard = ({
     const anchorYMD = asYMDLocal(anchorLibre);
     const fechasCiclosCard = esLibre
         ? [
-              anchorYMD || "—",
-              (anchorYMD ? addMonthsYMD(anchorYMD, 1) : null) || "—",
-              (anchorYMD ? addMonthsYMD(anchorYMD, 2) : null) || "—"
-          ]
+            anchorYMD || "—",
+            (anchorYMD ? addMonthsYMD(anchorYMD, 1) : null) || "—",
+            (anchorYMD ? addMonthsYMD(anchorYMD, 2) : null) || "—"
+        ]
         : [];
 
     // R (nuevo refi / origen refi)
@@ -346,42 +346,42 @@ const CreditoCard = ({
 
     const interesCicloActual = esLibre
         ? toNumber(
-              resumen?.data?.interes_ciclo_hoy ??
-                  resumen?.data?.interes_pendiente_hoy ??
-                  resumen?.data?.interes_hoy ??
-                  c.interes_pendiente_hoy ??
-                  0
-          )
+            resumen?.data?.interes_ciclo_hoy ??
+            resumen?.data?.interes_pendiente_hoy ??
+            resumen?.data?.interes_hoy ??
+            c.interes_pendiente_hoy ??
+            0
+        )
         : 0;
 
     const moraCicloActual = esLibre
         ? toNumber(
-              resumen?.data?.mora_ciclo_hoy ??
-                  resumen?.data?.mora_pendiente_hoy ??
-                  resumen?.data?.mora_hoy ??
-                  c.mora_pendiente_hoy ??
-                  0
-          )
+            resumen?.data?.mora_ciclo_hoy ??
+            resumen?.data?.mora_pendiente_hoy ??
+            resumen?.data?.mora_hoy ??
+            c.mora_pendiente_hoy ??
+            0
+        )
         : 0;
 
     let interesTotalPendiente = esLibre
         ? toNumber(
-              resumen?.data?.interes_pendiente_total ??
-                  resumen?.data?.interes_total ??
-                  resumen?.data?.interes_pendiente ??
-                  c.interes_pendiente_total ??
-                  0
-          )
+            resumen?.data?.interes_pendiente_total ??
+            resumen?.data?.interes_total ??
+            resumen?.data?.interes_pendiente ??
+            c.interes_pendiente_total ??
+            0
+        )
         : 0;
 
     let moraTotalPendiente = esLibre
         ? toNumber(
-              resumen?.data?.mora_pendiente_total ??
-                  resumen?.data?.mora_total ??
-                  resumen?.data?.mora_pendiente ??
-                  c.mora_pendiente_total ??
-                  0
-          )
+            resumen?.data?.mora_pendiente_total ??
+            resumen?.data?.mora_total ??
+            resumen?.data?.mora_pendiente ??
+            c.mora_pendiente_total ??
+            0
+        )
         : 0;
 
     // ✅ Guardarraíl: si el back mandó “HOY” pero no mandó totales, no mostramos 0 incoherente.
@@ -393,15 +393,15 @@ const CreditoCard = ({
     // ✅ Total a cancelar hoy: prioriza total_actual normalizado y cubre aliases típicos
     const totalPendienteHoy = esLibre
         ? toNumber(
-              resumen?.data?.total_actual ??
-                  resumen?.data?.total_liquidacion_hoy ??
-                  resumen?.data?.total_a_cancelar_hoy ??
-                  resumen?.data?.total_pagar_hoy ??
-                  resumen?.data?.total ??
-                  c.total_liquidacion_hoy ??
-                  c.total_actual ??
-                  libreCapital + interesTotalPendiente + moraTotalPendiente
-          )
+            resumen?.data?.total_actual ??
+            resumen?.data?.total_liquidacion_hoy ??
+            resumen?.data?.total_a_cancelar_hoy ??
+            resumen?.data?.total_pagar_hoy ??
+            resumen?.data?.total ??
+            c.total_liquidacion_hoy ??
+            c.total_actual ??
+            libreCapital + interesTotalPendiente + moraTotalPendiente
+        )
         : 0;
 
     const totalActualCard = esLibre
@@ -415,47 +415,47 @@ const CreditoCard = ({
     // ─────────────────────────────────────────────────────────────
     const descuentoLibreScope = esLibre
         ? safeLower(
-              resumen?.data?.descuento_scope ??
-                  resumen?.data?.ultimo_descuento_scope ??
-                  resumen?.data?.scope_descuento ??
-                  null
-          )
+            resumen?.data?.descuento_scope ??
+            resumen?.data?.ultimo_descuento_scope ??
+            resumen?.data?.scope_descuento ??
+            null
+        )
         : null;
 
     const descuentoLibreMoraPct = esLibre
         ? toNumber(
-              resumen?.data?.descuento_mora ??
-                  resumen?.data?.descuento_mora_pct ??
-                  resumen?.data?.pct_descuento_mora ??
-                  0
-          )
+            resumen?.data?.descuento_mora ??
+            resumen?.data?.descuento_mora_pct ??
+            resumen?.data?.pct_descuento_mora ??
+            0
+        )
         : 0;
 
     const descuentoLibreInteresPct = esLibre
         ? toNumber(
-              resumen?.data?.descuento_interes ??
-                  resumen?.data?.descuento_interes_pct ??
-                  resumen?.data?.pct_descuento_interes ??
-                  0
-          )
+            resumen?.data?.descuento_interes ??
+            resumen?.data?.descuento_interes_pct ??
+            resumen?.data?.pct_descuento_interes ??
+            0
+        )
         : 0;
 
     const descuentoLibreMoraPesos = esLibre
         ? toNumber(
-              resumen?.data?.descuento_mora_pesos ??
-                  resumen?.data?.descuento_mora_monto ??
-                  resumen?.data?.monto_descuento_mora ??
-                  0
-          )
+            resumen?.data?.descuento_mora_pesos ??
+            resumen?.data?.descuento_mora_monto ??
+            resumen?.data?.monto_descuento_mora ??
+            0
+        )
         : 0;
 
     const descuentoLibreInteresPesos = esLibre
         ? toNumber(
-              resumen?.data?.descuento_interes_pesos ??
-                  resumen?.data?.descuento_interes_monto ??
-                  resumen?.data?.monto_descuento_interes ??
-                  0
-          )
+            resumen?.data?.descuento_interes_pesos ??
+            resumen?.data?.descuento_interes_monto ??
+            resumen?.data?.monto_descuento_interes ??
+            0
+        )
         : 0;
 
     const hayInfoDescuentoLibre =
@@ -516,9 +516,9 @@ const CreditoCard = ({
     // Primer y último vencimiento reales (ignorando vencimiento ficticio de LIBRE)
     const vtosValidosCard = Array.isArray(c.cuotas)
         ? c.cuotas
-              .map((q) => q.fecha_vencimiento)
-              .filter((f) => f && f !== LIBRE_VTO_FICTICIO)
-              .sort()
+            .map((q) => q.fecha_vencimiento)
+            .filter((f) => f && f !== LIBRE_VTO_FICTICIO)
+            .sort()
         : [];
 
     const primerVtoCard = vtosValidosCard[0] || c.fecha_compromiso_pago || "—";
@@ -622,11 +622,10 @@ const CreditoCard = ({
                     {esLibre && !bloqueadoPorEstado && puedeImpactarPagos && (
                         <>
                             <button
-                                className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
-                                    parcialBloqueado
+                                className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${parcialBloqueado
                                         ? "border-gray-300 text-gray-400 bg-white cursor-not-allowed"
                                         : "border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50"
-                                }`}
+                                    }`}
                                 onClick={async (e) => {
                                     e.stopPropagation();
 
@@ -746,9 +745,8 @@ const CreditoCard = ({
                     {/* Botón Refinanciar */}
                     {MODALIDADES_REFINANCIABLES.includes(modalidadLower) && Number(c.saldo_actual) > 0 && (
                         <button
-                            className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${
-                                puedeRefinanciar ? "bg-indigo-600 hover:bg-indigo-700" : "bg-gray-300 text-gray-600 cursor-not-allowed"
-                            }`}
+                            className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${puedeRefinanciar ? "bg-indigo-600 hover:bg-indigo-700" : "bg-gray-300 text-gray-600 cursor-not-allowed"
+                                }`}
                             onClick={async (e) => {
                                 e.stopPropagation();
 
@@ -825,9 +823,8 @@ const CreditoCard = ({
                     {/* Cancelar crédito (no-libre) */}
                     {puedeCancelar && c.estado !== "pagado" && !esLibre && String(c.estado).toLowerCase() !== "refinanciado" && (
                         <button
-                            className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${
-                                estadoLower === "anulado" ? "bg-gray-300 text-gray-600 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700"
-                            }`}
+                            className={`inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-xs font-medium text-white ${estadoLower === "anulado" ? "bg-gray-300 text-gray-600 cursor-not-allowed" : "bg-rose-600 hover:bg-rose-700"
+                                }`}
                             onClick={async (e) => {
                                 e.stopPropagation();
 
@@ -960,9 +957,8 @@ const CreditoCard = ({
                 ))}
 
             <div
-                className={`grid transition-all duration-500 ease-in-out ${
-                    isOpen ? "grid-rows-[1fr] opacity-100 border-t border-gray-200" : "grid-rows-[0fr] opacity-0"
-                } overflow-hidden`}
+                className={`grid transition-all duration-500 ease-in-out ${isOpen ? "grid-rows-[1fr] opacity-100 border-t border-gray-200" : "grid-rows-[0fr] opacity-0"
+                    } overflow-hidden`}
             >
                 <div className="overflow-hidden">
                     <div className="space-y-4 p-4 sm:p-6 pt-0">
@@ -1170,11 +1166,10 @@ const CreditoCard = ({
                                     {!bloqueadoPorEstado && puedeImpactarPagos && (
                                         <div className="mt-3 flex gap-2">
                                             <button
-                                                className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
-                                                    parcialBloqueado
+                                                className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${parcialBloqueado
                                                         ? "border-gray-300 text-gray-400 bg-white cursor-not-allowed"
                                                         : "border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50"
-                                                }`}
+                                                    }`}
                                                 onClick={async () => {
                                                     if (parcialBloqueado) {
                                                         await swalBlocked("Abono parcial no disponible", "En el 3er ciclo no se permite abono parcial.");
