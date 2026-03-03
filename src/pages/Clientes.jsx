@@ -232,9 +232,17 @@ const Clientes = () => {
     };
 
     const clientesFiltrados = useMemo(() => {
-        const term = filtro.toLowerCase();
+        const term = String(filtro || "").trim().toLowerCase();
+        if (!term) return clientes;
+
         return clientes.filter((c) => {
-            const texto = `${c.nombre} ${c.apellido} ${c.dni} ${c.cobradorUsuario?.nombre_completo || ""}`.toLowerCase();
+            const nombre = String(c?.nombre ?? "");
+            const apellido = String(c?.apellido ?? "");
+            const dni = String(c?.dni ?? "");
+            const cobrador = String(c?.cobradorUsuario?.nombre_completo ?? "");
+
+            // ✅ incluye apellido explícitamente + nombre completo (ambos órdenes)
+            const texto = `${nombre} ${apellido} ${apellido} ${nombre} ${dni} ${cobrador}`.toLowerCase();
             return texto.includes(term);
         });
     }, [clientes, filtro]);
