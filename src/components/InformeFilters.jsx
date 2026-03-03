@@ -38,6 +38,26 @@ const RANGO_FECHA_CREDITO_OPTS = [
   { value: 'compromiso', label: 'Compromiso de pago' }
 ];
 
+/**
+ * Si el usuario escribe un ID de crédito en la búsqueda:
+ * - "123"
+ * - "#123"
+ * devuelve 123. Si no es un id válido, null.
+ */
+const parseCreditoIdFromQ = (q) => {
+  if (q == null) return null;
+  const s = String(q).trim();
+  if (!s) return null;
+
+  // permite "#123" o "123"
+  const m = /^#?\s*(\d+)\s*$/.exec(s);
+  if (!m) return null;
+
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+};
+
 const InformeFilters = ({ filters, onApply, onReset }) => {
   const [cobradores, setCobradores] = useState([]);
   const [clientesList, setClientesList] = useState([]);
@@ -120,6 +140,17 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
       }
     }
 
+    // ───────────────── Búsqueda: si es ID de crédito, enviamos creditoId ─────────────────
+    // Importante: esto soluciona “buscar crédito por ID” sin agregar un campo nuevo.
+    if (isCreditos && params.q) {
+      const creditoId = parseCreditoIdFromQ(params.q);
+      if (creditoId) {
+        params.creditoId = creditoId;
+        // evitamos que q intente buscar nombre/apellido (no aplica cuando es ID)
+        delete params.q;
+      }
+    }
+
     // ───────────────── Limpieza según tipo de informe ─────────────────
     if (isClientes) {
       // En clientes no aplican estos filtros
@@ -132,6 +163,7 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
       delete params.modalidad;
       delete params.q; // no se usa en clientes en tu backend actual
       delete params.rangoFechaCredito;
+      delete params.creditoId;
     } else if (isCreditos) {
       // En créditos: NO hay cuotas ni forma de pago ni "hoy"
       delete params.estadoCuota;
@@ -148,6 +180,8 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
       delete params.modalidad;
       // En cuotas no aplica este selector
       delete params.rangoFechaCredito;
+      // creditoId no aplica directo en cuotas (si luego quieren, se puede extender)
+      delete params.creditoId;
     }
 
     // ───────────────── Limpieza de campos vacíos / falsy ─────────────────
@@ -164,6 +198,13 @@ const InformeFilters = ({ filters, onApply, onReset }) => {
 
     // Selector de rango: si por algún motivo viene vacío, lo sacamos (backend tiene default igual)
     if (!params.rangoFechaCredito) delete params.rangoFechaCredito;
+
+    // creditoId: si por algún motivo vino inválido
+    if (params.creditoId != null) {
+      const n = Number(params.creditoId);
+      if (!Number.isFinite(n) || n <= 0) delete params.creditoId;
+      else params.creditoId = n;
+    }
 
     // Fechas: solo créditos/cuotas. En cuotas, si hoy=true, anula rango.
     if (!(isCuotas || isCreditos)) {

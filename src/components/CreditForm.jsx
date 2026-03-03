@@ -200,7 +200,7 @@ const CreditForm = ({
                     <Controller
                         control={control}
                         name="cobrador_id"
-                        rules={{ required: 'Requerido' }}
+                        rules={{}}
                         render={({ field }) => (
                             <select {...field} className={inputClass}>
                                 <option value="">Seleccione cobrador</option>

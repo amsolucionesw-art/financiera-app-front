@@ -32,6 +32,9 @@ const formatFecha = (dateLike) => {
     });
 };
 
+// Ruta de detalle de crédito (ajustar si tu app usa otra)
+const buildCreditoLink = (creditoId) => `/creditos/${creditoId}`;
+
 const TipoBadge = ({ tipo }) => {
     const t = (tipo || '').toLowerCase();
     const base = 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset';
@@ -57,11 +60,15 @@ const DatosTarea = ({ tarea }) => {
             <div className="space-y-1 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                     <span className="text-gray-600">Crédito:</span>
-                    {/* Si tenés una ruta definida para ver el crédito, reemplazá este span por <Link to={`/creditos/${creditoId}`}> */}
+
                     {creditoId ? (
-                        <span className="inline-flex items-center rounded bg-blue-50 px-2 py-0.5 text-blue-700 ring-1 ring-blue-200">
+                        <Link
+                            to={buildCreditoLink(creditoId)}
+                            className="inline-flex items-center rounded bg-blue-50 px-2 py-0.5 text-blue-700 ring-1 ring-blue-200 hover:bg-blue-100 hover:text-blue-800"
+                            title="Ver crédito"
+                        >
                             #{creditoId}
-                        </span>
+                        </Link>
                     ) : (
                         <span className="text-gray-700">-</span>
                     )}
@@ -101,7 +108,7 @@ const TareasPendientes = () => {
     const [cargando, setCargando] = useState(true);
 
     // <- lo traemos del layout (Dashboard)
-    const { checkTareasPendientes } = useOutletContext() || { checkTareasPendientes: async () => {} };
+    const { checkTareasPendientes } = useOutletContext() || { checkTareasPendientes: async () => { } };
 
     const cargarTareas = async () => {
         try {
