@@ -1,4 +1,3 @@
-// src/components/CuotasTabla.jsx
 import { useMemo, useState, useEffect } from 'react';
 import { parseISO, format } from 'date-fns';
 import { CreditCard, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -12,20 +11,109 @@ const VTO_FICTICIO_LIBRE = '2099-12-31';
 // ✅ Paginación
 const PAGE_SIZE = 10;
 
+const toNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+};
+
+const getPagoDescuento = (p) =>
+    toNum(
+        p?.descuento_aplicado ??
+        p?.descuento ??
+        p?.recibo?.descuento_aplicado ??
+        p?.recibo?.descuento ??
+        p?.recibo_ui?.descuento_aplicado ??
+        0
+    );
+
+const getPagoSaldoMora = (p) =>
+    toNum(
+        p?.saldo_mora ??
+        p?.recibo?.saldo_mora ??
+        p?.recibo_ui?.saldo_mora ??
+        0
+    );
+
+/**
+ * ✅ Regla nueva:
+ * 1) priorizar SIEMPRE lo consolidado por backend a nivel cuota
+ * 2) luego intentar reconstruir desde pagos
+ * 3) recién al final usar descuento_cuota legacy
+ */
+const getCuotaDescuentoMora = (cuota, esVtoLibre) => {
+    if (esVtoLibre) return 0;
+
+    const descuentoCuotaBackend = toNum(
+        cuota?.descuento_aplicado_total ??
+        cuota?.descuento_aplicado ??
+        cuota?.descuento_total ??
+        cuota?.descuento_mora_total ??
+        null
+    );
+
+    if (descuentoCuotaBackend > 0) return descuentoCuotaBackend;
+
+    const pagos = Array.isArray(cuota?.pagos) ? cuota.pagos : [];
+    const descuentoDesdePagos = pagos.reduce((acc, p) => acc + getPagoDescuento(p), 0);
+
+    if (descuentoDesdePagos > 0) return descuentoDesdePagos;
+
+    return toNum(cuota?.descuento_cuota);
+};
+
+/**
+ * ✅ Regla nueva:
+ * 1) priorizar saldo_mora / mora_neta de la cuota
+ * 2) luego intentar último saldo_mora desde pagos/recibos
+ * 3) fallback final a intereses_vencidos_acumulados
+ */
+const getCuotaSaldoMora = (cuota, esVtoLibre) => {
+    if (esVtoLibre) {
+        return toNum(
+            cuota?.saldo_mora ??
+            cuota?.mora_neta ??
+            cuota?.intereses_vencidos_acumulados
+        );
+    }
+
+    const saldoMoraBackend = toNum(
+        cuota?.saldo_mora ??
+        cuota?.mora_neta ??
+        null
+    );
+
+    if (saldoMoraBackend > 0) return saldoMoraBackend;
+
+    const pagos = Array.isArray(cuota?.pagos) ? cuota.pagos : [];
+
+    for (let i = pagos.length - 1; i >= 0; i -= 1) {
+        const p = pagos[i];
+        const tieneSaldoMoraDirecto =
+            p?.saldo_mora !== undefined && p?.saldo_mora !== null;
+        const tieneSaldoMoraRecibo =
+            p?.recibo?.saldo_mora !== undefined && p?.recibo?.saldo_mora !== null;
+        const tieneSaldoMoraUi =
+            p?.recibo_ui?.saldo_mora !== undefined && p?.recibo_ui?.saldo_mora !== null;
+
+        if (tieneSaldoMoraDirecto || tieneSaldoMoraRecibo || tieneSaldoMoraUi) {
+            return getPagoSaldoMora(p);
+        }
+    }
+
+    return toNum(cuota?.intereses_vencidos_acumulados);
+};
+
 const CuotasTabla = ({
     cuotas = [],
     interesCredito,
     refetch = () => { },
-    // ✅ NUEVO (opcional): si el contenedor (InfoCreditos) lo pasa, es lo más confiable
     creditoEstado = null
 }) => {
     const [seleccionada, setSeleccionada] = useState(null);
     const [cuotaDetalle, setCuotaDetalle] = useState(null);
 
-    // ✅ Paginación state
     const [page, setPage] = useState(1);
 
-    // 🔐 Permisos por rol (solo super admin y admin pueden impactar pagos)
     const token = localStorage.getItem('token');
     let rol_id = null;
     try {
@@ -45,29 +133,24 @@ const CuotasTabla = ({
         );
     }
 
-    // Orden estable por número de cuota (evita saltos al paginar)
     const cuotasOrdenadas = useMemo(() => {
         const arr = Array.isArray(cuotas) ? [...cuotas] : [];
         arr.sort((a, b) => Number(a?.numero_cuota ?? 0) - Number(b?.numero_cuota ?? 0));
         return arr;
     }, [cuotas]);
 
-    // Reset de página cuando cambia el set de cuotas (cambio de crédito / refetch)
     useEffect(() => {
         setPage(1);
     }, [cuotasOrdenadas]);
 
-    // Detecta modalidad "libre" por vencimiento ficticio (existe al menos una)
     const esLibre = useMemo(
         () => cuotasOrdenadas.some((q) => String(q.fecha_vencimiento) === VTO_FICTICIO_LIBRE),
         [cuotasOrdenadas]
     );
 
-    // ✅ Detectar si el CRÉDITO está refinanciado (por prop o por data embebida en cuotas)
     const creditoRefinanciado = useMemo(() => {
         const fromProp = String(creditoEstado ?? '').toLowerCase();
 
-        // Si viene en las cuotas como c.credito.estado o c.credito_estado, lo tomamos
         const fromCuotas = cuotasOrdenadas.some((c) => {
             const e1 = String(c?.credito?.estado ?? '').toLowerCase();
             const e2 = String(c?.credito_estado ?? '').toLowerCase();
@@ -77,12 +160,10 @@ const CuotasTabla = ({
         return fromProp === 'refinanciado' || fromCuotas;
     }, [creditoEstado, cuotasOrdenadas]);
 
-    // ✅ Paginación derivada
     const totalRows = cuotasOrdenadas.length;
-    const shouldPaginate = !esLibre && totalRows > PAGE_SIZE; // ✅ solo cuando NO es libre y supera 10
+    const shouldPaginate = !esLibre && totalRows > PAGE_SIZE;
     const totalPages = shouldPaginate ? Math.max(Math.ceil(totalRows / PAGE_SIZE), 1) : 1;
 
-    // Clamp defensivo si por algún motivo page queda fuera
     useEffect(() => {
         if (!shouldPaginate) return;
         if (page < 1) setPage(1);
@@ -98,33 +179,19 @@ const CuotasTabla = ({
     const filas = cuotasVisibles.map((c) => {
         const esVtoLibre = String(c.fecha_vencimiento) === VTO_FICTICIO_LIBRE;
 
-        // Principal programado (en LIBRE es el capital, en NO-LIBRE: importe de la cuota)
-        const principal = Number(c.importe_cuota || 0);
+        const principal = toNum(c.importe_cuota);
+        const descuentoMora = getCuotaDescuentoMora(c, esVtoLibre);
+        const saldoMora = getCuotaSaldoMora(c, esVtoLibre);
+        const pagado = toNum(c.monto_pagado_acumulado);
 
-        // Mora bruta calculada por backend (en LIBRE es la mora del ciclo; si no aplica, será 0)
-        const interesesMoraBruta = Number(c.intereses_vencidos_acumulados || 0);
-
-        // En NO-LIBRE: el descuento corresponde a MORA; en LIBRE: no aplica (se liquida a nivel recibo)
-        const descuentoMora = esVtoLibre ? 0 : Number(c.descuento_cuota || 0);
-
-        // Mora neta luego del descuento (en LIBRE = bruta)
-        const moraNeta = Math.max(interesesMoraBruta - descuentoMora, 0);
-
-        // Pagado acumulado (suma de principal aplicado + mora cobrada según regla del back)
-        const pagado = Number(c.monto_pagado_acumulado || 0);
-
-        // % pagado (solo tiene sentido en NO-LIBRE): base = principal + mora neta
-        const base = principal + moraNeta;
+        const base = principal + saldoMora;
         const pctWidth =
             c.estado === 'pagada' ? 100 : Math.min(Math.max(base > 0 ? (pagado / base) * 100 : 0, 0), 100);
         const pctText = c.estado === 'pagada' ? 100 : Math.round(pctWidth);
 
         const fechaVto = c?.fecha_vencimiento && !esVtoLibre ? parseISO(c.fecha_vencimiento) : null;
-
-        // Confiamos en el estado que manda backend
         const vencida = String(c.estado).toLowerCase() === 'vencida';
 
-        // 👉 Días de retraso: solo cuotas vencidas y con vencimiento real (no LIBRE)
         let diasRetraso = 0;
         if (!esVtoLibre && vencida && fechaVto instanceof Date && !isNaN(fechaVto)) {
             const hoy = new Date();
@@ -135,7 +202,6 @@ const CuotasTabla = ({
             diasRetraso = Math.max(Math.floor(diffMs / 86400000), 0);
         }
 
-        // ✅ Bloqueo por refinanciación (crédito o cuota)
         const cuotaRefinanciada =
             String(c?.estado ?? '').toLowerCase() === 'refinanciada' ||
             String(c?.estado ?? '').toLowerCase() === 'refinanciado';
@@ -148,7 +214,6 @@ const CuotasTabla = ({
                 className={`whitespace-nowrap text-center transition hover:bg-green-50 ${vencida ? 'bg-red-50' : 'odd:bg-white even:bg-gray-50'
                     }`}
             >
-                {/* Nº */}
                 <td
                     className="px-4 py-2 cursor-pointer font-mono text-blue-600 hover:underline"
                     onClick={() => setCuotaDetalle(c)}
@@ -157,7 +222,6 @@ const CuotasTabla = ({
                     #{c.numero_cuota}
                 </td>
 
-                {/* Principal */}
                 <td className="px-4 py-2">
                     $
                     {principal.toLocaleString('es-AR', {
@@ -166,10 +230,8 @@ const CuotasTabla = ({
                     })}
                 </td>
 
-                {/* Días de retraso (reemplaza Mora bruta) */}
                 <td className="px-4 py-2">{diasRetraso}</td>
 
-                {/* Descuento sobre mora (en LIBRE no aplica, se muestra —) */}
                 <td className="px-4 py-2">
                     {esVtoLibre ? (
                         <span
@@ -189,16 +251,14 @@ const CuotasTabla = ({
                     )}
                 </td>
 
-                {/* Mora neta */}
                 <td className="px-4 py-2">
                     $
-                    {moraNeta.toLocaleString('es-AR', {
+                    {saldoMora.toLocaleString('es-AR', {
                         minimumFractionDigits: 2,
                         maximumFractionDigits: 2
                     })}
                 </td>
 
-                {/* Vencimiento */}
                 <td className="px-4 py-2">
                     {esVtoLibre ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-emerald-100">
@@ -211,7 +271,6 @@ const CuotasTabla = ({
                     )}
                 </td>
 
-                {/* Estado */}
                 <td className="px-4 py-2">
                     <span
                         className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${estadoColors[c.estado] || 'bg-gray-200 text-gray-700'
@@ -226,7 +285,6 @@ const CuotasTabla = ({
                     </span>
                 </td>
 
-                {/* % pagado (solo no-libre) */}
                 {!esLibre && (
                     <td className="px-4 py-2">
                         <div className="flex items-center justify-center gap-1">
@@ -238,7 +296,6 @@ const CuotasTabla = ({
                     </td>
                 )}
 
-                {/* Acción */}
                 <td className="px-4 py-2">
                     {c.estado !== 'pagada' ? (
                         esVtoLibre ? (
@@ -283,16 +340,15 @@ const CuotasTabla = ({
     const columnas = [
         'N°',
         'Principal',
-        'Días de retraso', // reemplaza "Mora bruta"
+        'Días de retraso',
         'Desc. mora',
-        'Mora neta',
+        'Saldo mora',
         'Vencimiento',
         'Estado',
         !esLibre ? '% pagado' : null,
         'Acción'
     ].filter(Boolean);
 
-    // Helpers UI paginación
     const fromRow = shouldPaginate ? (page - 1) * PAGE_SIZE + 1 : 1;
     const toRow = shouldPaginate ? Math.min(page * PAGE_SIZE, totalRows) : totalRows;
 
@@ -313,7 +369,6 @@ const CuotasTabla = ({
                 </table>
             </div>
 
-            {/* ✅ Paginación: solo NO-LIBRE y > 10 cuotas */}
             {shouldPaginate && (
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm">
                     <div className="text-gray-600">
@@ -340,8 +395,8 @@ const CuotasTabla = ({
                         <button
                             type="button"
                             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${page >= totalPages
-                                    ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50'
-                                    : 'border-gray-300 hover:bg-gray-50'
+                                ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50'
+                                : 'border-gray-300 hover:bg-gray-50'
                                 }`}
                             onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
                             disabled={page >= totalPages}

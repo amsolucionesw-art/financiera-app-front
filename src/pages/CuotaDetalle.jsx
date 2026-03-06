@@ -1,4 +1,3 @@
-// src/pages/CuotaDetalle.jsx
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { obtenerCuotaPorId, obtenerPagosPorCuota } from '../services/cuotaService';
@@ -6,6 +5,11 @@ import { ArrowLeft, FileText } from 'lucide-react';
 import { parseISO, isValid, format as dfFormat } from 'date-fns';
 
 const VTO_FICTICIO_LIBRE = '2099-12-31';
+
+const toNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+};
 
 const fmtARS = (n) =>
     Number(n || 0).toLocaleString('es-AR', {
@@ -36,6 +40,22 @@ const estadoBadge = (estadoRaw = '') => {
     return 'bg-gray-100 text-gray-700 ring-gray-200';
 };
 
+const getPagoDescuento = (p) =>
+    toNum(
+        p?.descuento_aplicado ??
+        p?.descuento ??
+        p?.recibo?.descuento_aplicado ??
+        p?.recibo?.descuento ??
+        p?.recibo_ui?.descuento_aplicado ??
+        0
+    );
+
+const getPagoReciboNumero = (p) =>
+    p?.numero_recibo ??
+    p?.recibo?.numero_recibo ??
+    p?.recibo_id ??
+    null;
+
 const CuotaDetalle = () => {
     const { id } = useParams();
     const [cuota, setCuota] = useState(null);
@@ -49,10 +69,10 @@ const CuotaDetalle = () => {
             try {
                 setLoading(true);
                 setErr('');
+
                 const c = await obtenerCuotaPorId(id);
                 if (alive) setCuota(c?.data ?? c ?? null);
 
-                // Historial de pagos (si existe endpoint)
                 try {
                     const p = await obtenerPagosPorCuota(id);
                     const arr = Array.isArray(p) ? p : (p?.data ?? []);
@@ -68,6 +88,31 @@ const CuotaDetalle = () => {
         })();
         return () => { alive = false; };
     }, [id]);
+
+    const resumen = useMemo(() => {
+        const importe = toNum(cuota?.importe_cuota);
+        const descuentoCuota = toNum(cuota?.descuento_cuota);
+        const pagado = toNum(cuota?.monto_pagado_acumulado);
+        const mora = toNum(cuota?.intereses_vencidos_acumulados);
+
+        const descuentoDesdePagos = (pagos ?? []).reduce(
+            (acc, p) => acc + getPagoDescuento(p),
+            0
+        );
+
+        const descuentoMostrado = descuentoDesdePagos > 0 ? descuentoDesdePagos : descuentoCuota;
+        const pendiente = Math.max(importe - descuentoCuota - pagado, 0);
+
+        return {
+            importe,
+            descuentoCuota,
+            descuentoDesdePagos,
+            descuentoMostrado,
+            pagado,
+            mora,
+            pendiente,
+        };
+    }, [cuota, pagos]);
 
     if (loading) {
         return (
@@ -98,11 +143,7 @@ const CuotaDetalle = () => {
         );
     }
 
-    const importe = Number(cuota?.importe_cuota ?? 0);
-    const descuento = Number(cuota?.descuento_cuota ?? 0);
-    const pagado = Number(cuota?.monto_pagado_acumulado ?? 0);
-    const mora = Number(cuota?.intereses_vencidos_acumulados ?? 0);
-    const pendiente = Math.max(importe - descuento - pagado, 0);
+    const { importe, descuentoMostrado, pagado, mora, pendiente } = resumen;
 
     // LIBRE si el vencimiento es el ficticio
     const esLibre = String(cuota?.fecha_vencimiento) === VTO_FICTICIO_LIBRE;
@@ -143,7 +184,7 @@ const CuotaDetalle = () => {
                     </div>
                     <div>
                         <dt className="text-xs uppercase text-slate-500">Descuento aplicado</dt>
-                        <dd className="font-medium">{fmtARS(descuento)}</dd>
+                        <dd className="font-medium">{fmtARS(descuentoMostrado)}</dd>
                     </div>
                     <div>
                         <dt className="text-xs uppercase text-slate-500">Pagado acumulado</dt>
@@ -192,6 +233,7 @@ const CuotaDetalle = () => {
                                 <tr>
                                     <th className="px-3 py-2 text-left font-medium">Fecha</th>
                                     <th className="px-3 py-2 text-left font-medium">Monto</th>
+                                    <th className="px-3 py-2 text-left font-medium">Descuento</th>
                                     <th className="px-3 py-2 text-left font-medium">Medio</th>
                                     <th className="px-3 py-2 text-left font-medium">Recibo</th>
                                 </tr>
@@ -200,13 +242,19 @@ const CuotaDetalle = () => {
                                 {pagos.map((p) => {
                                     const fecha = safeFmtDate(p?.fecha_pago, p?.fecha || '—');
                                     const monto = fmtARS(p?.monto_pagado ?? p?.monto ?? 0);
-                                    const medio = p?.medio_pago ?? p?.forma_pago ?? '—';
-                                    const numeroRecibo = p?.numero_recibo ?? p?.recibo_id ?? null;
+                                    const descuentoPago = fmtARS(getPagoDescuento(p));
+                                    const medio =
+                                        p?.medio_pago ??
+                                        p?.forma_pago ??
+                                        p?.formaPago?.nombre ??
+                                        '—';
+                                    const numeroRecibo = getPagoReciboNumero(p);
 
                                     return (
                                         <tr key={p.id ?? `${fecha}-${monto}`}>
                                             <td className="px-3 py-2">{fecha}</td>
                                             <td className="px-3 py-2">{monto}</td>
+                                            <td className="px-3 py-2">{descuentoPago}</td>
                                             <td className="px-3 py-2">{medio}</td>
                                             <td className="px-3 py-2">
                                                 {numeroRecibo ? (

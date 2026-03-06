@@ -1,5 +1,3 @@
-// src/components/CuotaDetalleModal.jsx
-
 import { useEffect, useState, useMemo } from 'react';
 import { X, ListOrdered } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
@@ -7,9 +5,89 @@ import { obtenerPagosPorCuota } from '../services/cuotaService';
 
 const VTO_FICTICIO_LIBRE = '2099-12-31';
 
-const n2 = (v) => Number(v || 0);
+const toNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+};
+
 const money = (v) =>
-    n2(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    toNum(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const getPagoDescuento = (p) =>
+    toNum(
+        p?.descuento_aplicado ??
+        p?.descuento ??
+        p?.recibo?.descuento_aplicado ??
+        p?.recibo?.descuento ??
+        p?.recibo_ui?.descuento_aplicado ??
+        0
+    );
+
+const getPagoSaldoMora = (p) =>
+    toNum(
+        p?.saldo_mora ??
+        p?.recibo?.saldo_mora ??
+        p?.recibo_ui?.saldo_mora ??
+        0
+    );
+
+const getCuotaDescuentoMora = (cuota, pagos = [], esVtoLibre = false) => {
+    if (esVtoLibre) return 0;
+
+    const descuentoCuotaBackend = toNum(
+        cuota?.descuento_aplicado_total ??
+        cuota?.descuento_aplicado ??
+        cuota?.descuento_total ??
+        cuota?.descuento_mora_total ??
+        null
+    );
+
+    if (descuentoCuotaBackend > 0) return descuentoCuotaBackend;
+
+    const descuentoDesdePagos = (pagos ?? []).reduce(
+        (acc, pago) => acc + getPagoDescuento(pago),
+        0
+    );
+
+    if (descuentoDesdePagos > 0) return descuentoDesdePagos;
+
+    return toNum(cuota?.descuento_cuota);
+};
+
+const getCuotaSaldoMora = (cuota, pagos = [], esVtoLibre = false) => {
+    if (esVtoLibre) {
+        return toNum(
+            cuota?.saldo_mora ??
+            cuota?.mora_neta ??
+            cuota?.intereses_vencidos_acumulados
+        );
+    }
+
+    const saldoMoraBackend = toNum(
+        cuota?.saldo_mora ??
+        cuota?.mora_neta ??
+        null
+    );
+
+    if (saldoMoraBackend > 0) return saldoMoraBackend;
+
+    for (let i = pagos.length - 1; i >= 0; i -= 1) {
+        const p = pagos[i];
+
+        const tieneSaldoMoraDirecto =
+            p?.saldo_mora !== undefined && p?.saldo_mora !== null;
+        const tieneSaldoMoraRecibo =
+            p?.recibo?.saldo_mora !== undefined && p?.recibo?.saldo_mora !== null;
+        const tieneSaldoMoraUi =
+            p?.recibo_ui?.saldo_mora !== undefined && p?.recibo_ui?.saldo_mora !== null;
+
+        if (tieneSaldoMoraDirecto || tieneSaldoMoraRecibo || tieneSaldoMoraUi) {
+            return getPagoSaldoMora(p);
+        }
+    }
+
+    return toNum(cuota?.intereses_vencidos_acumulados);
+};
 
 const CuotaDetalleModal = ({ cuota, onClose }) => {
     const [pagos, setPagos] = useState([]);
@@ -20,25 +98,48 @@ const CuotaDetalleModal = ({ cuota, onClose }) => {
         [cuota?.fecha_vencimiento]
     );
 
-    // Derivados (no-libre)
-    const derived = useMemo(() => {
-        const importe = n2(cuota?.importe_cuota);
-        const desc = n2(cuota?.descuento_cuota);
-        const pagado = n2(cuota?.monto_pagado_acumulado);
-        const mora = n2(cuota?.intereses_vencidos_acumulados);
-        const principalNeto = Math.max(importe - desc, 0);
-        const principalPendiente = Math.max(principalNeto - pagado, 0);
-        return { importe, desc, pagado, mora, principalNeto, principalPendiente };
-    }, [cuota]);
-
     useEffect(() => {
         if (!cuota?.id) return;
         setCargando(true);
+
         obtenerPagosPorCuota(cuota.id)
-            .then((data) => setPagos(Array.isArray(data) ? data : []))
+            .then((resp) => {
+                const arr = Array.isArray(resp) ? resp : (resp?.data ?? []);
+                setPagos(Array.isArray(arr) ? arr : []);
+            })
             .catch(console.error)
             .finally(() => setCargando(false));
     }, [cuota?.id]);
+
+    const derived = useMemo(() => {
+        const importe = toNum(cuota?.importe_cuota);
+        const pagado = toNum(cuota?.monto_pagado_acumulado);
+
+        // Mantengo este dato para mostrar el descuento aplicado en la UI
+        const descMostrado = getCuotaDescuentoMora(cuota, pagos, esLibre);
+
+        // ⬇️ IMPORTANTE:
+        // Para que "Saldo total de la cuota" coincida con el modal de pago,
+        // replicamos exactamente la misma base de cálculo:
+        // principalPendiente = importe_cuota - descuento_cuota - monto_pagado_acumulado
+        const descAcumCuota = esLibre ? 0 : toNum(cuota?.descuento_cuota);
+
+        const saldoMora = getCuotaSaldoMora(cuota, pagos, esLibre);
+        const principalNeto = Math.max(importe - descAcumCuota, 0);
+        const principalPendiente = Math.max(importe - descAcumCuota - pagado, 0);
+        const saldoTotalCuota = Math.max(principalPendiente + saldoMora, 0);
+
+        return {
+            importe,
+            pagado,
+            descMostrado,
+            descAcumCuota,
+            saldoMora,
+            principalNeto,
+            principalPendiente,
+            saldoTotalCuota
+        };
+    }, [cuota, pagos, esLibre]);
 
     if (!cuota) return null;
 
@@ -101,33 +202,35 @@ const CuotaDetalleModal = ({ cuota, onClose }) => {
                             )}
                         </li>
 
-                        {/* Desglose sólo para NO libre */}
                         {!esLibre && (
                             <>
                                 <li>
                                     <span className="font-medium text-gray-600">Descuento aplicado:</span>{' '}
-                                    ${money(derived.desc)}
+                                    ${money(derived.descMostrado)}
                                 </li>
                                 <li>
                                     <span className="font-medium text-gray-600">Principal neto:</span>{' '}
                                     ${money(derived.principalNeto)}
                                 </li>
                                 <li>
-                                    <span className="font-medium text-gray-600">Mora acumulada:</span>{' '}
-                                    ${money(derived.mora)}
+                                    <span className="font-medium text-gray-600">Saldo de mora:</span>{' '}
+                                    ${money(derived.saldoMora)}
                                 </li>
                                 <li>
                                     <span className="font-medium text-gray-600">Pagado a principal:</span>{' '}
                                     ${money(derived.pagado)}
                                 </li>
-                                <li className="sm:col-span-2">
+                                <li>
                                     <span className="font-medium text-gray-600">Principal pendiente:</span>{' '}
                                     ${money(derived.principalPendiente)}
+                                </li>
+                                <li>
+                                    <span className="font-medium text-gray-600">Saldo total de la cuota:</span>{' '}
+                                    ${money(derived.saldoTotalCuota)}
                                 </li>
                             </>
                         )}
 
-                        {/* Nota para LIBRE */}
                         {esLibre && (
                             <li className="sm:col-span-2 text-xs text-gray-600">
                                 En <b>crédito libre</b> no hay mora ni vencimientos. Los abonos parciales se imputan primero
@@ -152,6 +255,7 @@ const CuotaDetalleModal = ({ cuota, onClose }) => {
                                     <tr>
                                         <th className="px-4 py-2 text-left font-medium text-gray-700">Fecha</th>
                                         <th className="px-4 py-2 text-left font-medium text-gray-700">Monto</th>
+                                        <th className="px-4 py-2 text-left font-medium text-gray-700">Descuento</th>
                                         <th className="px-4 py-2 text-left font-medium text-gray-700">Forma de pago</th>
                                         <th className="px-4 py-2 text-left font-medium text-gray-700">Observación</th>
                                     </tr>
@@ -166,7 +270,10 @@ const CuotaDetalleModal = ({ cuota, onClose }) => {
                                                 ${money(pago.monto_pagado)}
                                             </td>
                                             <td className="px-4 py-2 text-gray-800">
-                                                {pago.formaPago?.nombre ?? '—'}
+                                                ${money(getPagoDescuento(pago))}
+                                            </td>
+                                            <td className="px-4 py-2 text-gray-800">
+                                                {pago.formaPago?.nombre ?? pago.medio_pago ?? '—'}
                                             </td>
                                             <td className="px-4 py-2 text-gray-800">{pago.observacion || '—'}</td>
                                         </tr>
